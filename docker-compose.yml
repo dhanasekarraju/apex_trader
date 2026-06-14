@@ -1,6 +1,8 @@
 services:
   postgres:
     image: postgres:16-alpine
+    container_name: apex_trader_postgres
+    restart: always
     environment:
       POSTGRES_USER: apex
       POSTGRES_PASSWORD: apex
@@ -14,18 +16,25 @@ services:
       interval: 5s
       timeout: 5s
       retries: 5
+      start_period: 10s
 
   redis:
     image: redis:7-alpine
+    container_name: apex_trader_redis
+    restart: always
     ports:
       - "6379:6379"
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
+      timeout: 3s
       retries: 5
+      start_period: 5s
 
   api:
     build: .
+    container_name: apex_trader_api
+    restart: always
     ports:
       - "8080:8080"
     env_file:
@@ -39,7 +48,13 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
-    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://127.0.0.1:8080/api/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    stop_grace_period: 30s
 
 volumes:
   pgdata:

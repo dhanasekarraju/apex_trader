@@ -112,3 +112,14 @@ class PaperBroker(BrokerAdapter):
         self._open_positions.clear()
         audit("paper_flatten_all", count=count)
         return count
+
+    async def fetch_open_positions(self) -> list[dict]:
+        return [
+            {
+                "symbol": p["symbol"],
+                "qty": float(p["qty"]),
+                "entry": float(p["entry"]),
+                "side": "long",
+            }
+            for p in self._open_positions
+        ]

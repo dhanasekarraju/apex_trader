@@ -287,3 +287,29 @@ class KiteBroker(BrokerAdapter):
             audit("kite_flatten_failed", error=str(e))
         audit("kite_flatten_all", count=count)
         return count
+
+    async def fetch_open_positions(self) -> list[dict]:
+        if not self._kite:
+            return []
+        loop = asyncio.get_event_loop()
+        try:
+            positions_resp = await loop.run_in_executor(None, self._kite.positions)
+        except Exception as e:
+            audit("kite_positions_failed", error=str(e))
+            return []
+        out: list[dict] = []
+        for pos in self._net_positions(positions_resp):
+            qty = int(pos.get("quantity", 0))
+            if qty == 0:
+                continue
+            out.append(
+                {
+                    "symbol": pos.get("tradingsymbol", ""),
+                    "qty": abs(qty),
+                    "entry": float(pos.get("average_price") or 0),
+                    "side": "long" if qty > 0 else "short",
+                    "product": pos.get("product", ""),
+                    "exchange": pos.get("exchange", ""),
+                }
+            )
+        return out

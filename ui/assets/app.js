@@ -5,11 +5,20 @@ async function api(path, opts = {}) {
     headers: { 'Content-Type': 'application/json', ...(opts.headers || {}) },
     ...opts,
   });
-  if (!r.ok) {
-    const text = await r.text();
-    throw new Error(text || r.statusText);
+  const text = await r.text();
+  let payload;
+  try {
+    payload = text ? JSON.parse(text) : {};
+  } catch {
+    if (!r.ok) throw new Error(text || r.statusText);
+    return text;
   }
-  return r.json();
+  if (payload && typeof payload.success === 'boolean') {
+    if (!payload.success) throw new Error(payload.error || 'Request failed');
+    return payload.data ?? {};
+  }
+  if (!r.ok) throw new Error(text || r.statusText);
+  return payload;
 }
 
 function fmt(n, d = 2) {

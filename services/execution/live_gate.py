@@ -42,6 +42,14 @@ class LiveSafetyGate:
         if not cfg.enable_live_execution:
             blockers.append("ENABLE_LIVE_EXECUTION is false")
 
+        if not cfg.golive_approved:
+            blockers.append(
+                "GOLIVE_APPROVED is false — operator must explicitly approve live trading"
+            )
+
+        if portfolio.is_trading_halted():
+            blockers.append("EMERGENCY_HALT active — kill switch engaged")
+
         if cfg.default_broker.lower() == "kite" and not cfg.kite_static_ip_confirmed:
             blockers.append(
                 "Kite static IP not confirmed — register server IP at developers.kite.trade "

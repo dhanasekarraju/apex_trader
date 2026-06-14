@@ -100,6 +100,15 @@ class Settings(BaseSettings):
 
     enable_news_sentiment: bool = False
 
+    # Production ops
+    external_api_timeout_sec: float = 15.0
+    analyze_timeout_sec: float = 2.0
+    log_dir: str = "data/logs"
+    golive_approved: bool = False
+    api_failure_threshold: int = 5
+    api_circuit_pause_minutes: int = 10
+    idempotency_bucket_minutes: int = 5
+
 
 @lru_cache
 def get_settings() -> Settings:

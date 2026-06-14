@@ -1,0 +1,1 @@
+"""Trade persistence package."""

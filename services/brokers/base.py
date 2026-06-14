@@ -88,6 +88,10 @@ class BrokerAdapter(ABC):
     async def flatten_all(self) -> int:
         ...
 
+    async def fetch_open_positions(self) -> list[dict]:
+        """Return normalized open positions: [{symbol, qty, entry, side}]."""
+        return []
+
     async def reconcile_order(
         self,
         broker_order_id: str,

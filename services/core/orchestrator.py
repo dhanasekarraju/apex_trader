@@ -7,7 +7,8 @@ from services.alerts.notifier import AlertNotifier
 from services.backtest.professional import ProfessionalBacktester
 from services.brokers.base import OrderRequest, OrderType
 from services.data_quality.engine import DataQualityEngine
-from services.execution.router import ExecutionRouter
+from services.execution.execution_engine import ExecutionEngine
+from services.execution.idempotency import make_order_id
 from services.golive.gate import GoLiveGate
 from services.journal.service import TradeJournal
 from services.market_data.service import MarketDataService, RealDataRequired
@@ -20,7 +21,8 @@ from services.strategy_lab.registry import StrategyLab
 from services.strategies.engine import StrategyEngine
 from services.watchdog.service import WatchdogService
 from shared.config import get_settings
-from shared.logging import audit
+from shared.logging import audit, trade_log
+from shared.timeout import with_timeout
 
 
 class TradingOrchestrator:
@@ -34,7 +36,7 @@ class TradingOrchestrator:
         self.risk = AdvancedRiskEngine()
         self.sizing = PositionSizingEngine()
         self.portfolio = PortfolioManager()
-        self.execution = ExecutionRouter(portfolio=self.portfolio, market_data=self.data)
+        self.execution = ExecutionEngine(portfolio=self.portfolio, market_data=self.data)
         self.data_quality = DataQualityEngine(
             min_score=self.cfg.min_data_quality_score,
             max_stale_sec=self.cfg.max_stale_feed_seconds,
@@ -53,13 +55,30 @@ class TradingOrchestrator:
         await self.portfolio.load()
         await kite_auth.startup()
         self.data._real_data_ok = None
-        await self.execution.connect()
+        recovery = await self.execution.recover()
+        audit("orchestrator_startup", **recovery)
+
+    async def shutdown(self) -> None:
+        await self.portfolio.persist()
+        await self.execution.shutdown()
+        audit("orchestrator_shutdown")
 
     async def analyze_symbol(self, symbol: str) -> dict:
-        if self.portfolio.state.emergency_halt or self.portfolio.state.black_swan_mode:
+        try:
+            return await with_timeout(
+                self._analyze_symbol(symbol),
+                seconds=self.cfg.analyze_timeout_sec,
+                label="analyze_symbol",
+            )
+        except TimeoutError as exc:
+            audit("analyze_timeout", symbol=symbol, error=str(exc))
+            return self._no_trade(symbol, str(exc), "unclear")
+
+    async def _analyze_symbol(self, symbol: str) -> dict:
+        if self.portfolio.is_trading_halted():
             return self._no_trade(
                 symbol,
-                "Emergency halt active — trading suspended",
+                "Kill switch active — trading suspended",
                 "black_swan" if self.portfolio.state.black_swan_mode else "halted",
             )
 
@@ -120,6 +139,15 @@ class TradingOrchestrator:
         )
 
         risk_decision = self.risk.evaluate_advanced(proposal, risk_state)
+        risk_summary = "passed" if risk_decision.approved else risk_decision.reason
+        trade_log(
+            symbol=symbol,
+            strategy=sig.strategy,
+            action="RISK_CHECK",
+            confidence=top.ai_confidence,
+            risk_check=risk_summary,
+            result=risk_decision.verdict.value,
+        )
 
         decision = {
             "symbol": symbol,
@@ -161,11 +189,21 @@ class TradingOrchestrator:
                 decision["action"] = "REJECTED"
                 decision["risk_reason"] = "Invalid stop-loss — must be below entry"
             else:
-                result = await self.execution.submit(
+                order_id = make_order_id(
+                    symbol,
+                    sig.strategy,
+                    time_bucket_minutes=self.cfg.idempotency_bucket_minutes,
+                )
+                result = await self.execution.place_order(
                     OrderRequest(
-                        symbol=symbol, side="long", qty=risk_decision.approved_qty,
-                        order_type=OrderType.MARKET, stop_price=sig.stop_loss,
-                        take_profit=sig.take_profit, strategy=sig.strategy,
+                        symbol=symbol,
+                        side="long",
+                        qty=risk_decision.approved_qty,
+                        order_type=OrderType.MARKET,
+                        stop_price=sig.stop_loss,
+                        take_profit=sig.take_profit,
+                        strategy=sig.strategy,
+                        client_order_id=order_id,
                     ),
                     sig.entry,
                 )
@@ -264,13 +302,26 @@ class TradingOrchestrator:
             ],
         }
 
+    async def activate_kill_switch(self) -> dict:
+        """Full kill switch — halt, cancel, flatten, persist."""
+        result = await self.execution.activate_kill_switch()
+        await self.alerts.send(
+            "KILL SWITCH",
+            f"Emergency halt — cancelled {result['cancelled']}, flattened {result['flattened']}",
+            "critical",
+        )
+        return result
+
     async def emergency_flatten(self) -> dict:
         self.portfolio.enter_black_swan()
         await self.portfolio.persist()
-        n = await self.execution.flatten_all()
-        await self.portfolio.clear_after_flatten()
-        await self.alerts.send("EMERGENCY", f"Flatten all — {n} orders", "critical")
-        return {"flattened": n, "black_swan": True}
+        result = await self.execution.activate_kill_switch()
+        await self.alerts.send(
+            "EMERGENCY",
+            f"Flatten all — {result['flattened']} positions",
+            "critical",
+        )
+        return {"flattened": result["flattened"], "black_swan": True, "halted": True}
 
     def dashboard(self) -> dict:
         m = self.portfolio.metrics()

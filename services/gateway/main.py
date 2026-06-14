@@ -4,17 +4,20 @@ from __future__ import annotations
 
 from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import Literal
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, field_validator
 
 from services.core.orchestrator import TradingOrchestrator
+from services.gateway.middleware import EnvelopeMiddleware, register_exception_handlers
 from shared.config import get_settings
 from shared.database import init_db
-from shared.logging import setup_logging
+from shared.logging import audit, setup_logging
+from shared.validation import normalize_symbol
 
 UI_DIR = Path(__file__).resolve().parents[2] / "ui"
 orch = TradingOrchestrator()
@@ -27,9 +30,12 @@ async def lifespan(app: FastAPI):
         await init_db()
         await orch.startup()
     except Exception as e:
-        import structlog
-        structlog.get_logger("startup").error("startup_failed", error=str(e))
+        audit("startup_failed", error=str(e))
     yield
+    try:
+        await orch.shutdown()
+    except Exception as e:
+        audit("shutdown_failed", error=str(e))
 
 
 app = FastAPI(
@@ -45,6 +51,8 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+app.add_middleware(EnvelopeMiddleware)
+register_exception_handlers(app)
 
 if UI_DIR.is_dir():
     app.mount("/assets", StaticFiles(directory=UI_DIR / "assets"), name="assets")
@@ -67,16 +75,32 @@ def _app_url(path: str = "/") -> str:
 
 
 class AnalyzeRequest(BaseModel):
+    model_config = ConfigDict(strict=True)
+
     symbol: str
+
+    @field_validator("symbol")
+    @classmethod
+    def validate_symbol(cls, value: str) -> str:
+        return normalize_symbol(value)
 
 
 class BacktestRequest(BaseModel):
+    model_config = ConfigDict(strict=True)
+
     symbol: str
     strategy: str | None = None
 
+    @field_validator("symbol")
+    @classmethod
+    def validate_symbol(cls, value: str) -> str:
+        return normalize_symbol(value)
+
 
 class ModeRequest(BaseModel):
-    mode: str  # paper | shadow | live
+    model_config = ConfigDict(strict=True)
+
+    mode: Literal["paper", "shadow", "live"]
 
 
 @app.get("/")
@@ -111,10 +135,14 @@ async def dashboard():
 
 @app.get("/api/regime/{symbol}")
 async def regime(symbol: str):
-    df = orch.data.synthetic_ohlcv(symbol.upper())
+    try:
+        sym = normalize_symbol(symbol)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    df = orch.data.synthetic_ohlcv(sym)
     r = orch.regime.analyze(df)
     return {
-        "symbol": symbol.upper(),
+        "symbol": sym,
         "regime": r.regime.value,
         "confidence": r.confidence,
         "volatility_pct": r.volatility_pct,
@@ -127,12 +155,12 @@ async def regime(symbol: str):
 
 @app.post("/api/analyze")
 async def analyze(req: AnalyzeRequest):
-    return await orch.analyze_symbol(req.symbol.upper())
+    return await orch.analyze_symbol(req.symbol)
 
 
 @app.post("/api/backtest")
 async def backtest(req: BacktestRequest):
-    return orch.run_backtest(req.symbol.upper(), req.strategy)
+    return orch.run_backtest(req.symbol, req.strategy)
 
 
 @app.get("/api/strategies")
@@ -252,16 +280,13 @@ async def kite_disconnect():
 
     await kite_auth.disconnect()
     orch.data._real_data_ok = None
-    if hasattr(orch.execution._broker, "disconnect"):
-        await orch.execution._broker.disconnect()
+    await orch.execution.disconnect()
     return {"ok": True, "message": "Kite session cleared"}
 
 
 @app.post("/api/mode")
 async def set_mode(req: ModeRequest):
-    mode = req.mode.lower()
-    if mode not in ("paper", "shadow", "live"):
-        raise HTTPException(400, "Mode must be paper, shadow, or live")
+    mode = req.mode
     if mode == "live":
         blockers = await orch.execution.live_blockers()
         if blockers:
@@ -270,20 +295,17 @@ async def set_mode(req: ModeRequest):
                 f"Live trading blocked: {', '.join(blockers[:3])}",
             )
     import os
-    from services.brokers.factory import get_broker
+
     os.environ["TRADING_MODE"] = mode
     get_settings.cache_clear()
     orch.cfg = get_settings()
-    orch.execution._broker = get_broker()
+    orch.execution.refresh_broker()
     return {"mode": mode, "message": f"Switched to {mode} mode"}
 
 
 @app.post("/api/emergency/shutdown")
 async def emergency_shutdown():
-    orch.portfolio.emergency_shutdown()
-    await orch.portfolio.persist()
-    await orch.execution.cancel_all()
-    return {"ok": True, "message": "Emergency shutdown — no new trades, pending cancelled"}
+    return await orch.activate_kill_switch()
 
 
 @app.post("/api/emergency/resume")
@@ -310,16 +332,29 @@ async def emergency_flatten():
 
 @app.post("/api/backtest/validate")
 async def backtest_validate(req: BacktestRequest):
-    result = orch.run_backtest(req.symbol.upper(), req.strategy)
+    result = orch.run_backtest(req.symbol, req.strategy)
     return {
         **result,
         "auto_reject": not result.get("passed_validation", False),
     }
 
 
+@app.get("/api/execution/dlq")
+async def execution_dlq():
+    return {
+        "pending": await orch.execution.dead_letter_pending(),
+        "circuit": orch.execution.circuit_status(),
+    }
+
+
+@app.get("/api/metrics")
+async def api_metrics():
+    return await metrics()
+
+
 @app.get("/metrics")
 async def metrics():
-    from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
-    from fastapi.responses import Response
+    from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
+
     return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
 

@@ -136,3 +136,48 @@ class KiteSession(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
+
+
+class TradeRecord(Base):
+    """Persisted order lifecycle — crash recovery source of truth."""
+
+    __tablename__ = "trade_records"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    client_order_id: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    symbol: Mapped[str] = mapped_column(String(32), index=True)
+    strategy: Mapped[str] = mapped_column(String(64), default="")
+    side: Mapped[str] = mapped_column(String(8), default="long")
+    qty: Mapped[float] = mapped_column(Float, default=0)
+    entry_price: Mapped[float | None] = mapped_column(Float)
+    stop_loss: Mapped[float | None] = mapped_column(Float)
+    take_profit: Mapped[float | None] = mapped_column(Float)
+    exit_price: Mapped[float | None] = mapped_column(Float)
+    exit_reason: Mapped[str | None] = mapped_column(String(64))
+    status: Mapped[str] = mapped_column(String(24), default="pending", index=True)
+    trading_mode: Mapped[str] = mapped_column(String(16), default="paper")
+    broker_order_id: Mapped[str | None] = mapped_column(String(64))
+    stop_order_id: Mapped[str | None] = mapped_column(String(64))
+    message: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class DeadLetterOrder(Base):
+    """Failed orders queued for manual review."""
+
+    __tablename__ = "dead_letter_orders"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    client_order_id: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    symbol: Mapped[str] = mapped_column(String(32), index=True)
+    strategy: Mapped[str] = mapped_column(String(64), default="")
+    side: Mapped[str] = mapped_column(String(8), default="long")
+    qty: Mapped[float] = mapped_column(Float, default=0)
+    trading_mode: Mapped[str] = mapped_column(String(16), default="paper")
+    failure_reason: Mapped[str] = mapped_column(Text)
+    payload: Mapped[str] = mapped_column(Text, default="{}")
+    status: Mapped[str] = mapped_column(String(24), default="pending_review", index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
