@@ -1,0 +1,332 @@
+const API = window.APEX_BASE || '';
+
+async function api(path, opts = {}) {
+  const r = await fetch(API + path, {
+    headers: { 'Content-Type': 'application/json', ...(opts.headers || {}) },
+    ...opts,
+  });
+  if (!r.ok) {
+    const text = await r.text();
+    throw new Error(text || r.statusText);
+  }
+  return r.json();
+}
+
+function fmt(n, d = 2) {
+  if (n == null || isNaN(n)) return '—';
+  return Number(n).toLocaleString('en-IN', { maximumFractionDigits: d });
+}
+
+function fmtRs(n) {
+  return '₹' + fmt(n);
+}
+
+function renderEquityCurve(points) {
+  const canvas = document.getElementById('equityChart');
+  if (!canvas || !points?.length) return;
+  const ctx = canvas.getContext('2d');
+  const w = canvas.width = canvas.parentElement.clientWidth - 32;
+  const h = canvas.height = 120;
+  ctx.clearRect(0, 0, w, h);
+  const vals = points.map(p => p.equity);
+  const min = Math.min(...vals);
+  const max = Math.max(...vals);
+  const range = max - min || 1;
+  ctx.strokeStyle = '#22c55e';
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  vals.forEach((v, i) => {
+    const x = (i / (vals.length - 1 || 1)) * (w - 20) + 10;
+    const y = h - 10 - ((v - min) / range) * (h - 20);
+    i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+  });
+  ctx.stroke();
+}
+
+function renderReadiness(report) {
+  const el = document.getElementById('readinessPanel');
+  const pill = document.getElementById('readinessPill');
+  if (!report) return;
+  const passed = report.overall_passed;
+  pill.textContent = passed ? 'Go-live READY' : 'Go-live BLOCKED';
+  pill.className = 'pill ' + (passed ? 'live' : 'danger');
+  const cats = (report.categories || []).map(c => `
+    <div class="gate ${c.passed ? 'ok' : 'fail'}">
+      <span>${c.passed ? '✓' : '✗'}</span>
+      <span><strong>${c.name}</strong> — ${c.score?.toFixed?.(0) ?? c.score}% · ${c.details}</span>
+    </div>`).join('');
+  el.innerHTML = `
+    <div style="margin-bottom:10px;font-size:13px;color:${passed ? 'var(--green)' : 'var(--red)'}">
+      ${report.recommendation}
+    </div>
+    ${report.blockers?.length ? `<div class="metric-sub" style="margin-bottom:8px">Blockers: ${report.blockers.join('; ')}</div>` : ''}
+    <div class="gates">${cats}</div>`;
+}
+
+function renderStrategyRanking(rows) {
+  const el = document.getElementById('strategyPanel');
+  if (!rows?.length) {
+    el.innerHTML = '<div class="empty">No strategies registered</div>';
+    return;
+  }
+  el.innerHTML = `<table><thead><tr><th>Strategy</th><th>Win%</th><th>PnL</th><th>Status</th></tr></thead><tbody>
+    ${rows.map(r => `<tr>
+      <td>${r.name}</td>
+      <td>${r.win_rate}%</td>
+      <td>${fmtRs(r.total_pnl)}</td>
+      <td><span class="badge ${r.enabled ? 'buy' : 'reject'}">${r.enabled ? 'ON' : 'OFF'}</span></td>
+    </tr>`).join('')}
+  </tbody></table>`;
+}
+
+function renderShadow(shadow) {
+  const el = document.getElementById('shadowPanel');
+  if (!shadow) return;
+  el.innerHTML = `
+    <div class="grid grid-2" style="gap:10px">
+      <div><div class="metric-sub">Simulated fills</div><div class="metric">${shadow.simulated_fills ?? 0}</div></div>
+      <div><div class="metric-sub">Missed opportunities</div><div class="metric amber">${shadow.missed_opportunities ?? 0}</div></div>
+      <div><div class="metric-sub">Avg slippage</div><div style="font-family:var(--mono)">${shadow.avg_slippage_bps ?? 0} bps</div></div>
+      <div><div class="metric-sub">Shadow win rate</div><div style="font-family:var(--mono)">${shadow.win_rate ?? 0}%</div></div>
+    </div>`;
+}
+
+function renderJournal(j) {
+  const el = document.getElementById('journalPanel');
+  if (!j) return;
+  el.innerHTML = `
+    <div class="grid grid-2" style="gap:10px">
+      <div><div class="metric-sub">Decisions</div><div class="metric">${j.total_decisions ?? 0}</div></div>
+      <div><div class="metric-sub">Closed trades</div><div class="metric">${j.closed_trades ?? 0}</div></div>
+      <div><div class="metric-sub">Win rate</div><div class="metric green">${j.win_rate ?? 0}%</div></div>
+      <div><div class="metric-sub">Total PnL</div><div class="metric">${fmtRs(j.total_pnl ?? 0)}</div></div>
+    </div>`;
+}
+
+async function loadKiteStatus() {
+  const panel = document.getElementById('kiteStatusPanel');
+  const pill = document.getElementById('kitePill');
+  const connectBtn = document.getElementById('kiteConnectBtn');
+  const disconnectBtn = document.getElementById('kiteDisconnectBtn');
+  const hint = document.getElementById('kiteRedirectHint');
+  if (!panel) return;
+  try {
+    const s = await api('/api/kite/status');
+    pill.textContent = s.connected ? 'Kite CONNECTED' : 'Kite OFFLINE';
+    pill.className = 'pill ' + (s.connected ? 'live' : (s.configured ? 'warn' : 'danger'));
+    const who = s.user_name ? ` · ${s.user_name}` : '';
+    const when = s.login_time ? ` · logged in ${new Date(s.login_time).toLocaleString('en-IN')}` : '';
+    panel.innerHTML = `<span style="color:${s.connected ? 'var(--green)' : 'var(--amber)'}">${s.message}${who}${when}</span>`;
+    if (s.redirect_url && s.configured) {
+      hint.style.display = 'block';
+      hint.textContent = `Register this redirect URL on developers.kite.trade: ${s.redirect_url}`;
+    }
+    connectBtn.style.display = s.connected ? 'none' : 'inline-block';
+    disconnectBtn.style.display = s.connected ? 'inline-block' : 'none';
+  } catch (e) {
+    panel.textContent = 'Unable to load Kite session status';
+    pill.textContent = 'Kite —';
+    pill.className = 'pill danger';
+  }
+}
+
+function handleKiteQueryParams() {
+  const params = new URLSearchParams(window.location.search);
+  const kite = params.get('kite');
+  if (!kite) return;
+  if (kite === 'connected') {
+    alert('Zerodha Kite connected successfully. Session saved for today.');
+  } else if (kite === 'error') {
+    const reason = params.get('reason') || 'unknown';
+    alert('Kite login failed: ' + decodeURIComponent(reason));
+  }
+  window.history.replaceState({}, '', (window.APEX_BASE || '') + '/');
+}
+
+async function disconnectKite() {
+  if (!confirm('Disconnect Zerodha Kite session on this server?')) return;
+  await api('/api/kite/disconnect', { method: 'POST' });
+  loadKiteStatus();
+  loadDashboard();
+}
+
+async function loadDashboard() {
+  try {
+    const [d, readiness] = await Promise.all([
+      api('/api/dashboard'),
+      api('/api/readiness'),
+    ]);
+    const p = d.portfolio || {};
+    document.getElementById('mEquity').textContent = fmtRs(p.equity);
+    const pnlEl = document.getElementById('mPnl');
+    pnlEl.textContent = (p.daily_pnl >= 0 ? '+' : '') + fmtRs(p.daily_pnl);
+    pnlEl.className = 'metric ' + (p.daily_pnl >= 0 ? 'green' : 'red');
+    document.getElementById('mDrawdown').textContent = fmt(p.drawdown_pct) + '%';
+    document.getElementById('mPositions').textContent = p.open_positions ?? 0;
+    document.getElementById('mHeatSub').textContent = 'Portfolio heat ' + fmt(p.portfolio_heat_pct) + '%';
+    document.getElementById('heatPill').textContent = 'Heat ' + fmt(p.portfolio_heat_pct) + '%';
+    document.getElementById('modeSelect').value = d.mode || 'paper';
+
+    const halted = !!(p.trading_halted || p.emergency_halt || p.black_swan_mode);
+    const resumeBtn = document.getElementById('resumeBtn');
+    if (resumeBtn) resumeBtn.style.display = halted ? 'inline-block' : 'none';
+    const modePill = document.getElementById('modePill');
+    if (halted) {
+      modePill.textContent = 'HALTED';
+      modePill.className = 'pill danger';
+    } else {
+      modePill.textContent = (d.mode || 'paper').toUpperCase();
+      modePill.className = 'pill live';
+    }
+
+    const pr = document.getElementById('principles');
+    pr.innerHTML = (d.principles || []).map(t =>
+      `<span class="principle">${t}</span>`).join('');
+
+    renderEquityCurve(d.equity_curve || []);
+    renderReadiness(readiness);
+    renderStrategyRanking(d.strategy_ranking || []);
+    renderShadow(d.shadow_report);
+    renderJournal(d.journal_weekly);
+    renderDecisions(d.recent_decisions || []);
+  } catch (e) {
+    console.error(e);
+  }
+}
+
+function renderDecisions(rows) {
+  const body = document.getElementById('decisionsBody');
+  if (!rows.length) {
+    body.innerHTML = '<tr><td colspan="7" class="empty">No decisions yet</td></tr>';
+    return;
+  }
+  body.innerHTML = rows.map(d => {
+    const cls = d.action === 'BUY' ? 'buy' : (d.action === 'REJECTED' ? 'reject' : 'wait');
+    return `<tr>
+      <td>${d.symbol}</td>
+      <td><span class="badge ${cls}">${d.action}</span></td>
+      <td>${d.regime || '—'}</td>
+      <td>${d.strategy || '—'}</td>
+      <td>${d.ai_confidence ?? '—'}</td>
+      <td>${d.risk_verdict || '—'}</td>
+      <td>${d.qty ?? '—'}</td>
+    </tr>`;
+  }).join('');
+}
+
+async function analyzeSymbol() {
+  const sym = document.getElementById('symbolInput').value.trim().toUpperCase();
+  if (!sym) return;
+  const el = document.getElementById('analysisResult');
+  el.innerHTML = '<div class="empty">Analyzing through full pipeline…</div>';
+
+  try {
+    const [decision, regime] = await Promise.all([
+      api('/api/analyze', { method: 'POST', body: JSON.stringify({ symbol: sym }) }),
+      api('/api/regime/' + sym),
+    ]);
+
+    document.getElementById('regimePill').textContent = 'Regime ' + (regime.regime || '—');
+    document.getElementById('regimePanel').innerHTML = `
+      <div class="metric" style="font-size:1.2rem;margin-bottom:8px">${regime.regime}</div>
+      <div class="metric-sub">${regime.explanation}</div>
+      <div style="margin-top:12px;font-size:12px;color:var(--muted)">
+        Confidence ${regime.confidence}% · Vol ${regime.volatility_pct}% ·
+        Trade ${regime.trade_allowed ? 'allowed' : 'blocked'}
+      </div>
+      <div style="margin-top:8px;font-size:11px;color:var(--cyan)">
+        Strategies: ${(regime.recommended_strategies || []).join(', ') || 'none'}
+      </div>`;
+
+    const cls = decision.action === 'BUY' ? 'buy' : 'reject';
+    const checks = (decision.risk_checks || []).map(c =>
+      `<div class="gate ${c.passed ? 'ok' : 'fail'}">
+        <span>${c.passed ? '✓' : '✗'}</span>
+        <span><strong>${c.name}</strong> — ${c.detail}</span>
+      </div>`).join('');
+
+    el.innerHTML = `
+      <div style="margin-bottom:12px">
+        <span class="badge ${cls}">${decision.action}</span>
+        <span style="margin-left:8px;font-family:var(--mono);font-size:12px">${decision.risk_reason || decision.reason || ''}</span>
+      </div>
+      <div class="grid grid-2" style="gap:12px;margin-bottom:12px">
+        <div><div class="metric-sub">Strategy</div><div style="font-family:var(--mono)">${decision.strategy || '—'}</div></div>
+        <div><div class="metric-sub">AI confidence</div><div style="font-family:var(--mono);color:var(--cyan)">${decision.ai_confidence ?? '—'}</div></div>
+        <div><div class="metric-sub">Entry / SL / Target</div><div style="font-family:var(--mono);font-size:11px">${decision.entry} / ${decision.stop_loss} / ${decision.take_profit}</div></div>
+        <div><div class="metric-sub">Approved qty</div><div style="font-family:var(--mono)">${decision.qty ?? 0}</div></div>
+      </div>
+      <h2 style="font-size:10px;margin-bottom:8px">Risk checks</h2>
+      <div class="gates">${checks || '<div class="empty">No checks</div>'}</div>`;
+
+    loadDashboard();
+  } catch (e) {
+    el.innerHTML = '<div class="empty">Analysis failed — is API running?</div>';
+  }
+}
+
+async function runBacktest() {
+  const sym = document.getElementById('btSymbol').value.trim().toUpperCase();
+  const strategy = document.getElementById('btStrategy').value || null;
+  const el = document.getElementById('backtestResult');
+  el.innerHTML = '<div class="empty">Running backtest…</div>';
+  try {
+    const r = await api('/api/backtest', {
+      method: 'POST',
+      body: JSON.stringify({ symbol: sym, strategy }),
+    });
+    const pass = r.passed_validation;
+    el.innerHTML = `
+      <div class="grid grid-2" style="gap:10px">
+        <div><div class="metric-sub">Trades</div><div class="metric" style="font-size:1.2rem">${r.total_trades}</div></div>
+        <div><div class="metric-sub">Win rate</div><div class="metric green" style="font-size:1.2rem">${r.win_rate}%</div></div>
+        <div><div class="metric-sub">Net return</div><div class="metric ${r.net_return_pct>=0?'green':'red'}" style="font-size:1.2rem">${r.net_return_pct}%</div></div>
+        <div><div class="metric-sub">Max DD</div><div class="metric amber" style="font-size:1.2rem">${r.max_drawdown}%</div></div>
+        <div><div class="metric-sub">Sharpe / Sortino / Calmar</div><div style="font-family:var(--mono);font-size:11px">${r.sharpe} / ${r.sortino} / ${r.calmar}</div></div>
+        <div><div class="metric-sub">Profit factor</div><div style="font-family:var(--mono)">${r.profit_factor}</div></div>
+      </div>
+      <div style="margin-top:10px;font-size:12px;color:${pass?'var(--green)':'var(--red)'}">
+        Validation: ${pass ? 'PASSED' : 'FAILED'} · WF ${r.walk_forward_passed?'✓':'✗'} · MC ${r.monte_carlo_passed?'✓':'✗'}
+      </div>
+      ${r.rejection_reasons?.length ? `<div class="metric-sub" style="margin-top:6px">${r.rejection_reasons.join('; ')}</div>` : ''}`;
+  } catch (e) {
+    el.innerHTML = '<div class="empty">Backtest failed</div>';
+  }
+}
+
+async function switchMode(mode) {
+  try {
+    await api('/api/mode', { method: 'POST', body: JSON.stringify({ mode }) });
+    loadDashboard();
+  } catch (e) {
+    alert('Mode switch blocked: ' + e.message);
+    loadDashboard();
+  }
+}
+
+async function emergencyShutdown() {
+  if (!confirm('Activate emergency shutdown? No new trades will be placed.')) return;
+  await api('/api/emergency/shutdown', { method: 'POST' });
+  alert('Emergency shutdown activated.');
+  loadDashboard();
+}
+
+async function emergencyFlatten() {
+  if (!confirm('FLATTEN ALL positions and enter black swan mode?')) return;
+  const r = await api('/api/emergency/flatten', { method: 'POST' });
+  alert('Flatten initiated. Orders: ' + (r.flattened ?? 0));
+  loadDashboard();
+}
+
+async function resumeTrading() {
+  if (!confirm('Clear emergency halt and resume trading? Only do this after reviewing what triggered the stop.')) return;
+  const r = await api('/api/emergency/resume', { method: 'POST' });
+  alert(r.message || 'Trading resumed.');
+  loadDashboard();
+}
+
+loadKiteStatus();
+handleKiteQueryParams();
+loadDashboard();
+setInterval(loadDashboard, 30000);
+setInterval(loadKiteStatus, 60000);

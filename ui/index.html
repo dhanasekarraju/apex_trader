@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Apex Trader — Institutional Platform</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="__BASE_PATH__/assets/style.css">
+</head>
+<body>
+<div class="app">
+  <header>
+    <div class="brand">
+      <div class="logo">A</div>
+      <div>
+        <h1>Apex Trader</h1>
+        <p>Institutional algorithmic platform · Capital preservation first</p>
+      </div>
+    </div>
+    <div class="pills">
+      <span class="pill live" id="modePill">PAPER</span>
+      <span class="pill" id="readinessPill">Go-live —</span>
+      <span class="pill" id="regimePill">Regime —</span>
+      <span class="pill" id="heatPill">Heat —</span>
+      <select id="modeSelect" onchange="switchMode(this.value)" style="background:var(--surface);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:6px 10px;font-size:12px">
+        <option value="paper">Paper</option>
+        <option value="shadow">Shadow</option>
+        <option value="live">Live (gated)</option>
+      </select>
+      <button class="btn ghost" onclick="loadDashboard()">Refresh</button>
+      <button class="btn danger" onclick="emergencyShutdown()">Emergency stop</button>
+      <button class="btn danger" onclick="emergencyFlatten()">Flatten all</button>
+      <button class="btn" id="resumeBtn" onclick="resumeTrading()" style="display:none;background:linear-gradient(135deg,#b45309,#f59e0b)">Resume trading</button>
+    </div>
+  </header>
+
+  <div class="principles" id="principles"></div>
+
+  <div class="card kite-card" id="kiteCard">
+    <div class="kite-row">
+      <div>
+        <h2>Zerodha Kite session</h2>
+        <div id="kiteStatusPanel" class="metric-sub">Checking Kite session…</div>
+        <div id="kiteRedirectHint" class="metric-sub" style="margin-top:6px;display:none"></div>
+      </div>
+      <div class="kite-actions">
+        <span class="pill" id="kitePill">Kite —</span>
+        <a class="btn" id="kiteConnectBtn" href="__BASE_PATH__/api/kite/login">Connect Zerodha</a>
+        <button class="btn ghost" id="kiteDisconnectBtn" onclick="disconnectKite()" style="display:none">Disconnect</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="grid grid-4" style="margin-bottom:16px">
+    <div class="card"><h2>Portfolio equity</h2><div class="metric" id="mEquity">—</div><div class="metric-sub">Initial capital preserved</div></div>
+    <div class="card"><h2>Daily P&amp;L</h2><div class="metric" id="mPnl">—</div><div class="metric-sub">Risk budget monitored</div></div>
+    <div class="card"><h2>Drawdown</h2><div class="metric amber" id="mDrawdown">—</div><div class="metric-sub">Max monthly cap enforced</div></div>
+    <div class="card"><h2>Open positions</h2><div class="metric" id="mPositions">—</div><div class="metric-sub" id="mHeatSub">Portfolio heat —</div></div>
+  </div>
+
+  <div class="grid grid-2" style="margin-bottom:16px">
+    <div class="card">
+      <h2>Equity curve</h2>
+      <canvas id="equityChart" height="120"></canvas>
+    </div>
+    <div class="card">
+      <h2>Go-live readiness</h2>
+      <div id="readinessPanel"><div class="empty">Loading readiness report…</div></div>
+    </div>
+  </div>
+
+  <div class="grid grid-3" style="margin-bottom:16px">
+    <div class="card">
+      <h2>Signal analysis</h2>
+      <div class="input-row">
+        <input id="symbolInput" placeholder="Symbol e.g. RELIANCE, BTC, EURUSD" value="RELIANCE">
+        <button class="btn" onclick="analyzeSymbol()">Analyze</button>
+      </div>
+      <div id="analysisResult"><div class="empty">Enter symbol and analyze — risk engine has final say</div></div>
+    </div>
+    <div class="card">
+      <h2>Market regime</h2>
+      <div id="regimePanel"><div class="empty">Select symbol to classify regime</div></div>
+    </div>
+    <div class="card">
+      <h2>Strategy lab</h2>
+      <div id="strategyPanel"><div class="empty">Strategy ranking loads with dashboard</div></div>
+    </div>
+  </div>
+
+  <div class="grid grid-2" style="margin-bottom:16px">
+    <div class="card">
+      <h2>Open positions</h2>
+      <div style="overflow-x:auto">
+        <table>
+          <thead><tr><th>Symbol</th><th>Qty</th><th>Entry</th><th>SL</th><th>Target</th><th>Strategy</th><th>Risk%</th></tr></thead>
+          <tbody id="positionsBody"><tr><td colspan="7" class="empty">No open positions</td></tr></tbody>
+        </table>
+      </div>
+    </div>
+    <div class="card">
+      <h2>Backtest validation</h2>
+      <div class="input-row">
+        <input id="btSymbol" value="RELIANCE" placeholder="Symbol">
+        <select id="btStrategy">
+          <option value="">Dynamic (regime)</option>
+          <option value="trend_following">Trend Following</option>
+          <option value="momentum">Momentum</option>
+          <option value="mean_reversion">Mean Reversion</option>
+          <option value="breakout">Breakout</option>
+          <option value="volatility_expansion">Volatility Expansion</option>
+        </select>
+        <button class="btn ghost" onclick="runBacktest()">Run</button>
+      </div>
+      <div id="backtestResult"><div class="empty">Walk-forward + Monte Carlo validation</div></div>
+    </div>
+  </div>
+
+  <div class="grid grid-2" style="margin-bottom:16px">
+    <div class="card">
+      <h2>Shadow mode report</h2>
+      <div id="shadowPanel"><div class="empty">Shadow stats appear in shadow mode</div></div>
+    </div>
+    <div class="card">
+      <h2>Trade journal (weekly)</h2>
+      <div id="journalPanel"><div class="empty">Decisions logged automatically</div></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Decision audit trail</h2>
+    <div style="overflow-x:auto">
+      <table>
+        <thead><tr><th>Symbol</th><th>Action</th><th>Regime</th><th>Strategy</th><th>AI conf</th><th>Risk</th><th>Qty</th></tr></thead>
+        <tbody id="decisionsBody"><tr><td colspan="7" class="empty">No decisions yet</td></tr></tbody>
+      </table>
+    </div>
+  </div>
+
+  <footer>
+    Apex Trader v2.0 · Risk overrides AI · Shadow before live · Catastrophic losses are not acceptable
+  </footer>
+</div>
+<script>window.APEX_BASE = '__BASE_PATH__';</script>
+<script src="__BASE_PATH__/assets/app.js"></script>
+</body>
+</html>
