@@ -42,3 +42,4 @@
 {"symbol": "RELIANCE", "side": "long", "qty": 10, "simulated_fill": 2500.75, "market_at_signal": 2500.0, "slippage_bps": 3.0, "would_have_pnl": null, "missed": false, "strategy": "momentum", "timestamp": "2026-06-14T05:50:50.467166+00:00"}
 {"symbol": "RELIANCE", "side": "long", "qty": 10, "simulated_fill": 2500.75, "market_at_signal": 2500.0, "slippage_bps": 3.0, "would_have_pnl": null, "missed": false, "strategy": "momentum", "timestamp": "2026-06-14T05:51:27.518778+00:00"}
 {"symbol": "RELIANCE", "side": "long", "qty": 10, "simulated_fill": 2500.75, "market_at_signal": 2500.0, "slippage_bps": 3.0, "would_have_pnl": null, "missed": false, "strategy": "momentum", "timestamp": "2026-06-14T05:55:17.565616+00:00"}
+{"symbol": "RELIANCE", "side": "long", "qty": 10, "simulated_fill": 2500.75, "market_at_signal": 2500.0, "slippage_bps": 3.0, "would_have_pnl": null, "missed": false, "strategy": "momentum", "timestamp": "2026-06-14T06:38:28.445647+00:00"}

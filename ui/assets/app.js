@@ -536,6 +536,25 @@ async function stopAutonomous() {
   loadAutonomousPanel();
 }
 
+async function copySupportBundle() {
+  const btn = document.getElementById('supportBundleBtn');
+  const prev = btn?.textContent;
+  try {
+    if (btn) { btn.textContent = 'Loading…'; btn.disabled = true; }
+    const r = await fetch(API + '/api/support/incident-bundle?format=text', {
+      headers: authHeaders(),
+    });
+    if (!r.ok) throw new Error(await r.text() || r.statusText);
+    const text = await r.text();
+    await navigator.clipboard.writeText(text);
+    if (btn) btn.textContent = 'Copied!';
+    setTimeout(() => { if (btn) { btn.textContent = prev || 'Copy logs'; btn.disabled = false; } }, 2500);
+  } catch (e) {
+    if (btn) { btn.textContent = prev || 'Copy logs'; btn.disabled = false; }
+    alert('Could not copy logs: ' + (e.message || e) + '\n\nEnsure API key is set (APEX_API_KEY in page config).');
+  }
+}
+
 loadKiteStatus();
 handleKiteQueryParams();
 loadDashboard();

@@ -632,6 +632,21 @@ async def ws_system(ws: WebSocket):
         await ws.close()
 
 
+@app.get("/api/support/incident-bundle", dependencies=[Depends(require_api_auth)])
+async def support_incident_bundle(format: str = Query(default="json")):
+    from services.support.bundle import build_incident_bundle, bundle_as_text
+
+    bundle = await build_incident_bundle(orchestrator=orch)
+    audit("support_bundle_generated", mode=get_settings().trading_mode)
+    if format.lower() == "text":
+        return Response(
+            bundle_as_text(bundle),
+            media_type="text/plain; charset=utf-8",
+            headers={"Content-Disposition": "attachment; filename=apex-incident-bundle.txt"},
+        )
+    return bundle
+
+
 @app.get("/api/chaos/scenarios", dependencies=[Depends(require_api_auth)])
 async def chaos_scenarios():
     from services.chaos.scenarios import CHAOS_SCENARIOS
