@@ -1,0 +1,32 @@
+"""Institutional Control Layer — action taxonomy."""
+
+from __future__ import annotations
+
+from enum import Enum
+
+
+class ControlAction(str, Enum):
+    # Trading
+    ANALYZE_SYMBOL = "ANALYZE_SYMBOL"
+    PLACE_ORDER = "PLACE_ORDER"
+    PLACE_EXIT = "PLACE_EXIT"
+    MODIFY_ORDER = "MODIFY_ORDER"
+
+    # System
+    START_AUTONOMOUS = "START_AUTONOMOUS"
+    STOP_AUTONOMOUS = "STOP_AUTONOMOUS"
+    ENABLE_LIVE = "ENABLE_LIVE"
+    DISABLE_LIVE = "DISABLE_LIVE"
+    FLATTEN_ALL = "FLATTEN_ALL"
+    RECONCILE_PORTFOLIO = "RECONCILE_PORTFOLIO"
+
+    # Admin
+    RESET_PNL = "RESET_PNL"
+    CLEAR_STATE = "CLEAR_STATE"
+    TOGGLE_MODE = "TOGGLE_MODE"
+    ADMIN_KILL_SWITCH = "ADMIN_KILL_SWITCH"
+    ADMIN_RESET_KILL_SWITCH = "ADMIN_RESET_KILL_SWITCH"
+    ADMIN_RESUME = "ADMIN_RESUME"
+
+    # Strategy governance (SGE)
+    GOVERN_STRATEGY = "GOVERN_STRATEGY"

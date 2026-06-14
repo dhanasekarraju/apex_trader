@@ -3,6 +3,10 @@
 from __future__ import annotations
 
 from services.brokers.base import BrokerAdapter
+from services.control.reconciliation_state import (
+    clear_reconciliation_degraded,
+    set_reconciliation_degraded,
+)
 from services.portfolio.manager import PortfolioManager
 from services.portfolio.models import PositionView
 from services.trades.repository import TradeRepository
@@ -19,15 +23,30 @@ async def reconcile_on_startup(
     """
     1. Load open trades from Postgres (idempotency seed)
     2. Fetch broker open positions (source of truth)
-    3. Repair portfolio mismatches
+    3. Repair portfolio mismatches — NEVER delete positions if broker fetch fails
     """
     open_rows = await trades.open_trades()
     broker_positions: list[dict] = []
+    broker_fetch_ok = True
+
     if trading_mode != "shadow":
         try:
             broker_positions = await broker.fetch_open_positions()
         except Exception as e:
+            broker_fetch_ok = False
             audit("broker_positions_fetch_failed", error=str(e))
+            await set_reconciliation_degraded(str(e))
+            return {
+                "reconciliation_status": "DEGRADED",
+                "open_trades_db": len(open_rows),
+                "broker_positions": 0,
+                "positions_added": 0,
+                "positions_removed": 0,
+                "positions_updated": 0,
+                "reason": str(e),
+            }
+
+    await clear_reconciliation_degraded()
 
     db_by_symbol = {p.symbol: p for p in portfolio.state.positions}
     broker_by_symbol = {
@@ -67,18 +86,20 @@ async def reconcile_on_startup(
             added += 1
             audit("reconcile_position_added", symbol=symbol, qty=qty)
 
-    for symbol in list(db_by_symbol.keys()):
-        if symbol not in broker_by_symbol and trading_mode in ("live", "paper"):
-            portfolio.state.positions = [
-                p for p in portfolio.state.positions if p.symbol != symbol
-            ]
-            removed += 1
-            audit("reconcile_position_removed", symbol=symbol)
+    if broker_fetch_ok:
+        for symbol in list(db_by_symbol.keys()):
+            if symbol not in broker_by_symbol and trading_mode in ("live", "paper"):
+                portfolio.state.positions = [
+                    p for p in portfolio.state.positions if p.symbol != symbol
+                ]
+                removed += 1
+                audit("reconcile_position_removed", symbol=symbol)
 
     if added or removed or updated:
         await portfolio.persist()
 
     return {
+        "reconciliation_status": "OK",
         "open_trades_db": len(open_rows),
         "broker_positions": len(broker_by_symbol),
         "positions_added": added,

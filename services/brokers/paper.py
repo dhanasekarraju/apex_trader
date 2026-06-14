@@ -58,7 +58,11 @@ class PaperBroker(BrokerAdapter):
             self._open_positions.append(
                 {"symbol": req.symbol, "qty": req.qty, "entry": fill, "order_id": oid}
             )
-        audit("paper_order_filled", symbol=req.symbol, qty=req.qty, price=fill)
+        elif req.side == "short" and req.order_type == OrderType.MARKET:
+            self._open_positions = [
+                p for p in self._open_positions if p["symbol"] != req.symbol
+            ]
+        audit("paper_order_filled", symbol=req.symbol, qty=req.qty, price=fill, side=req.side)
         return result
 
     async def reconcile_order(
@@ -111,6 +115,13 @@ class PaperBroker(BrokerAdapter):
         count = len(self._open_positions)
         self._open_positions.clear()
         audit("paper_flatten_all", count=count)
+        return count
+
+    async def flatten_symbol(self, symbol: str) -> int:
+        sym = symbol.upper()
+        count = sum(1 for p in self._open_positions if p["symbol"] == sym)
+        self._open_positions = [p for p in self._open_positions if p["symbol"] != sym]
+        audit("paper_flatten_symbol", symbol=sym, count=count)
         return count
 
     async def fetch_open_positions(self) -> list[dict]:

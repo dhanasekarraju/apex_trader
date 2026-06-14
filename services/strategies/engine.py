@@ -177,6 +177,7 @@ class StrategyEngine:
         regime: str,
         allowed: list[str] | None = None,
     ) -> list[Signal]:
+        """Run strategies — must be gated by ICB STRATEGY_SCAN before calling."""
         out: list[Signal] = []
         for name, strat in STRATEGY_REGISTRY.items():
             if allowed and name not in allowed:

@@ -1,8 +1,15 @@
 const API = window.APEX_BASE || '';
+const API_KEY = window.APEX_API_KEY || '';
+
+function authHeaders(extra = {}) {
+  const headers = { 'Content-Type': 'application/json', ...extra };
+  if (API_KEY) headers['X-API-Key'] = API_KEY;
+  return headers;
+}
 
 async function api(path, opts = {}) {
   const r = await fetch(API + path, {
-    headers: { 'Content-Type': 'application/json', ...(opts.headers || {}) },
+    headers: authHeaders(opts.headers || {}),
     ...opts,
   });
   const text = await r.text();
@@ -313,29 +320,227 @@ async function switchMode(mode) {
   }
 }
 
-async function emergencyShutdown() {
-  if (!confirm('Activate emergency shutdown? No new trades will be placed.')) return;
-  await api('/api/emergency/shutdown', { method: 'POST' });
-  alert('Emergency shutdown activated.');
+function statusClass(status) {
+  const s = (status || 'SAFE').toUpperCase();
+  if (s === 'HALTED') return 'status-halted';
+  if (s === 'DANGER') return 'status-danger';
+  if (s === 'WARNING') return 'status-warning';
+  return 'status-safe';
+}
+
+function renderPositions(positions) {
+  const body = document.getElementById('positionsBody');
+  if (!body) return;
+  if (!positions?.length) {
+    body.innerHTML = '<tr><td colspan="8" class="empty">No open positions</td></tr>';
+    return;
+  }
+  body.innerHTML = positions.map(p => {
+    const pnlCls = p.unrealized_pnl >= 0 ? 'green' : 'red';
+    return `<tr>
+      <td>${p.symbol}</td>
+      <td>${fmt(p.qty, 0)}</td>
+      <td>${fmtRs(p.avg_price)}</td>
+      <td>${fmtRs(p.ltp)}</td>
+      <td class="${pnlCls}">${fmtRs(p.unrealized_pnl)}</td>
+      <td>${p.strategy || '—'}</td>
+      <td>${p.source || '—'}</td>
+    </tr>`;
+  }).join('');
+}
+
+function renderTradeStream(events) {
+  const el = document.getElementById('tradeStream');
+  if (!el) return;
+  if (!events?.length) {
+    el.innerHTML = '<div class="empty">No trade events yet</div>';
+    return;
+  }
+  el.innerHTML = events.map(e => `
+    <div class="event">
+      <span>${(e.timestamp || '').slice(11, 19) || '—'}</span>
+      <span>${e.action || '—'}</span>
+      <span>${e.symbol || '—'} · ${e.strategy || '—'} · ${e.result || ''} ${e.message || ''}</span>
+    </div>`).join('');
+}
+
+async function loadControlPanel() {
+  try {
+    const [pnl, risk, trades] = await Promise.all([
+      api('/api/risk/pnl/live'),
+      api('/api/risk/status'),
+      api('/api/risk/trades/recent?limit=20'),
+    ]);
+
+    const portPnl = document.getElementById('livePortfolioPnl');
+    const dailyPnl = document.getElementById('liveDailyPnl');
+    if (portPnl) {
+      portPnl.textContent = (pnl.portfolio_pnl >= 0 ? '+' : '') + fmtRs(pnl.portfolio_pnl);
+      portPnl.className = 'metric ' + (pnl.portfolio_pnl >= 0 ? 'green' : 'red');
+    }
+    if (dailyPnl) {
+      dailyPnl.textContent = (pnl.daily_pnl >= 0 ? '+' : '') + fmtRs(pnl.daily_pnl);
+      dailyPnl.className = 'metric ' + (pnl.daily_pnl >= 0 ? 'green' : 'red');
+    }
+    document.getElementById('liveExposure').textContent = fmt(pnl.open_exposure) + '%';
+    document.getElementById('liveMargin').textContent = fmt(pnl.margin_used) + '%';
+
+    const status = risk.status || 'SAFE';
+    const statusEl = document.getElementById('riskStatusLabel');
+    const sysPill = document.getElementById('systemStatusPill');
+    const cls = statusClass(status);
+    if (statusEl) {
+      statusEl.textContent = status;
+      statusEl.className = 'metric ' + cls;
+    }
+    if (sysPill) {
+      sysPill.textContent = 'System ' + status;
+      sysPill.className = 'pill ' + cls;
+    }
+
+    const halted = !!risk.kill_switch;
+    document.getElementById('killSwitchLabel').textContent = halted ? 'ON' : 'OFF';
+    document.getElementById('killSwitchLabel').className = 'metric ' + (halted ? 'red' : 'green');
+    const killBtn = document.getElementById('killSwitchBtn');
+    if (killBtn) {
+      killBtn.classList.toggle('active', halted);
+      killBtn.textContent = halted ? 'HALTED' : 'KILL SWITCH';
+      killBtn.disabled = halted;
+    }
+    const resumeBtn = document.getElementById('resumeBtn');
+    if (resumeBtn) resumeBtn.style.display = halted ? 'inline-block' : 'none';
+
+    const pnlPill = document.getElementById('livePnlPill');
+    if (pnlPill) {
+      pnlPill.textContent = 'PnL ' + fmtRs(pnl.portfolio_pnl);
+      pnlPill.className = 'pill ' + (pnl.portfolio_pnl >= 0 ? 'live' : 'danger');
+    }
+
+    renderPositions(pnl.positions || []);
+    renderTradeStream(trades.events || []);
+
+    const analyzeBtn = document.querySelector('#symbolInput + .btn, .input-row .btn');
+    document.querySelectorAll('.input-row input, .input-row select, .input-row .btn').forEach(el => {
+      if (halted) el.setAttribute('disabled', 'disabled');
+      else el.removeAttribute('disabled');
+    });
+    loadAutonomousPanel();
+  } catch (e) {
+    console.error('control panel', e);
+  }
+}
+
+async function killSwitchOn() {
+  if (!confirm('ACTIVATE KILL SWITCH?\n\nThis will cancel all orders, flatten positions, and block all trading.')) return;
+  await api('/api/admin/kill-switch/on', { method: 'POST' });
+  alert('Kill switch activated.');
   loadDashboard();
+  loadControlPanel();
+}
+
+async function emergencyShutdown() {
+  return killSwitchOn();
 }
 
 async function emergencyFlatten() {
-  if (!confirm('FLATTEN ALL positions and enter black swan mode?')) return;
-  const r = await api('/api/emergency/flatten', { method: 'POST' });
-  alert('Flatten initiated. Orders: ' + (r.flattened ?? 0));
+  if (!confirm('FLATTEN ALL and enter black swan mode?')) return;
+  const r = await api('/api/admin/flatten-all', { method: 'POST' });
+  alert('Flatten complete. Positions closed: ' + (r.flattened ?? 0));
   loadDashboard();
+  loadControlPanel();
 }
 
 async function resumeTrading() {
-  if (!confirm('Clear emergency halt and resume trading? Only do this after reviewing what triggered the stop.')) return;
-  const r = await api('/api/emergency/resume', { method: 'POST' });
+  if (!confirm('Clear kill switch and resume trading? Only do this after reviewing what triggered the stop.')) return;
+  const r = await api('/api/admin/kill-switch/off', { method: 'POST' });
   alert(r.message || 'Trading resumed.');
   loadDashboard();
+  loadControlPanel();
+  loadAutonomousPanel();
+}
+
+function renderAutonomous(status) {
+  if (!status) return;
+  const running = !!status.running;
+  const pill = document.getElementById('autonomousPill');
+  if (pill) {
+    pill.textContent = running ? 'AUTO — RUNNING' : 'AUTO — OFF';
+    pill.className = 'pill ' + (running ? 'live' : '');
+  }
+  document.getElementById('autoSession').textContent = status.session || '—';
+  document.getElementById('autoWatchlist').textContent =
+    (status.watchlist_count ?? 0) + ' symbols' + (status.watchlist_preview?.length ? ' · ' + status.watchlist_preview.slice(0, 4).join(', ') : '');
+  document.getElementById('autoLastCycle').textContent =
+    status.last_cycle_at ? (status.last_cycle_at.slice(11, 19) || status.last_cycle) : (status.last_cycle || '—');
+  const stats = status.stats || {};
+  document.getElementById('autoCycleStats').textContent =
+    stats.scanned != null ? `${stats.scanned} / ${stats.buy ?? 0} buy` : '—';
+
+  const blockersEl = document.getElementById('autoBlockers');
+  const blockers = status.blockers || [];
+  if (blockersEl) {
+    if (blockers.length && !running) {
+      blockersEl.style.display = 'block';
+      blockersEl.textContent = 'Blockers: ' + blockers.join('; ');
+    } else {
+      blockersEl.style.display = 'none';
+      blockersEl.textContent = '';
+    }
+  }
+
+  const recentEl = document.getElementById('autoRecent');
+  const recent = status.recent || [];
+  if (recentEl) {
+    if (!recent.length) {
+      recentEl.innerHTML = `<div class="empty">${running ? 'Scanning watchlist…' : 'Autonomous idle — start to scan watchlist'}</div>`;
+    } else {
+      recentEl.innerHTML = recent.slice().reverse().map(r =>
+        `<div class="event"><span>${r.symbol}</span> · <span>${r.action}</span> · ${(r.reason || r.strategy || '').slice(0, 48)}</div>`
+      ).join('');
+    }
+  }
+
+  const startBtn = document.getElementById('autoStartBtn');
+  const stopBtn = document.getElementById('autoStopBtn');
+  const halted = document.getElementById('killSwitchLabel')?.textContent === 'ON';
+  if (startBtn) {
+    startBtn.style.display = running ? 'none' : 'inline-block';
+    startBtn.disabled = !!halted || blockers.length > 0;
+  }
+  if (stopBtn) stopBtn.style.display = running ? 'inline-block' : 'none';
+}
+
+async function loadAutonomousPanel() {
+  try {
+    const status = await api('/api/autonomous/status');
+    renderAutonomous(status);
+  } catch (e) {
+    console.error('autonomous panel', e);
+  }
+}
+
+async function startAutonomous() {
+  if (!confirm('Start autonomous engine?\n\nIt will scan the watchlist and route every signal through the full risk + execution pipeline.')) return;
+  try {
+    const r = await api('/api/autonomous/start', { method: 'POST' });
+    alert(r.message || 'Autonomous engine started.');
+    loadAutonomousPanel();
+  } catch (e) {
+    alert(e.message || 'Failed to start autonomous engine');
+    loadAutonomousPanel();
+  }
+}
+
+async function stopAutonomous() {
+  await api('/api/autonomous/stop', { method: 'POST' });
+  loadAutonomousPanel();
 }
 
 loadKiteStatus();
 handleKiteQueryParams();
 loadDashboard();
+loadControlPanel();
+loadAutonomousPanel();
+setInterval(loadControlPanel, 3000);
 setInterval(loadDashboard, 30000);
 setInterval(loadKiteStatus, 60000);

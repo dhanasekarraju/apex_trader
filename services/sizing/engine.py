@@ -82,12 +82,12 @@ class PositionSizingEngine:
         max_capital = inp.equity * 0.15
         max_qty = max_capital / inp.entry
         capped = qty > max_qty
-        qty = max(0, min(qty, max_qty))
+        qty = max(0, min(int(qty), int(max_qty)))
 
         risk_rs = qty * per_share_risk
         risk_pct = risk_rs / inp.equity * 100 if inp.equity else 0
 
         return SizeResult(
-            round(qty, 2), method.value, round(risk_pct, 3),
+            qty, method.value, round(risk_pct, 3),
             round(risk_rs, 2), capped, detail,
         )

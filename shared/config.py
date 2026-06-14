@@ -102,12 +102,45 @@ class Settings(BaseSettings):
 
     # Production ops
     external_api_timeout_sec: float = 15.0
-    analyze_timeout_sec: float = 2.0
+    analyze_timeout_sec: float = 10.0
+    execute_timeout_sec: float = 45.0
     log_dir: str = "data/logs"
     golive_approved: bool = False
+    chaos_gate_enforce: bool = True
+    chaos_report_max_age_hours: int = 168
     api_failure_threshold: int = 5
     api_circuit_pause_minutes: int = 10
     idempotency_bucket_minutes: int = 5
+    enforce_market_hours: bool = True
+    max_entry_deviation_pct: float = 2.0
+    lifecycle_poll_sec: float = 5.0
+
+    # Autonomous engine (institutional scan → analyze → execute)
+    autonomous_enabled: bool = True
+    autonomous_allow_live: bool = False
+    autonomous_scan_interval_sec: float = 90.0
+    autonomous_symbol_cooldown_sec: float = 300.0
+    autonomous_max_symbols_per_cycle: int = 15
+    autonomous_max_watchlist_size: int = 50
+    autonomous_inter_symbol_delay_sec: float = 1.5
+    autonomous_session_start: str = "09:20"
+    autonomous_session_end: str = "15:15"
+    watchlist_symbols: str = ""
+    watchlist_file: str = "data/watchlist.yaml"
+    enforce_sector_correlation_limits: bool = False
+
+    # API security
+    api_access_key: str = ""
+    cors_allowed_origins: str = ""
+
+    # Institutional Control Brain (ICB)
+    icb_timeout_sec: float = 5.0
+    icb_max_trades_per_hour: int = 20
+    icb_trade_window_minutes: int = 60
+    icb_drift_restrict_threshold: int = 1
+    icb_heat_degrade_pct: float = 3.0
+    icb_degraded_size_multiplier: float = 0.5
+    icb_autonomous_buy_spike: int = 8
 
 
 @lru_cache

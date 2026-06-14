@@ -6,13 +6,18 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Literal
 
-from fastapi import FastAPI, HTTPException, Query
+import asyncio
+import json
+
+from fastapi import Depends, FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, field_validator
 
+from services.control.trade_stream import recent_trade_events
 from services.core.orchestrator import TradingOrchestrator
+from services.gateway.auth import cors_allowed_origins, require_api_auth, require_ws_auth, resolve_api_access_key
 from services.gateway.middleware import EnvelopeMiddleware, register_exception_handlers
 from shared.config import get_settings
 from shared.database import init_db
@@ -21,17 +26,77 @@ from shared.validation import normalize_symbol
 
 UI_DIR = Path(__file__).resolve().parents[2] / "ui"
 orch = TradingOrchestrator()
+_refresh_task: asyncio.Task | None = None
+_lifecycle_task: asyncio.Task | None = None
+_autonomous_task: asyncio.Task | None = None
+
+
+async def _control_refresh_loop() -> None:
+    """Background PnL + risk cache refresh every 3 seconds."""
+    from services.control.actions import ControlAction
+    from services.control.layer import control_layer
+    from services.control.pnl_reset import maybe_reset_pnl_periods
+    from services.control.reconciliation_state import is_reconciliation_degraded
+
+    while True:
+        try:
+            icl = await control_layer.allow(
+                ControlAction.RESET_PNL,
+                {"portfolio": orch.portfolio, "trading_mode": get_settings().trading_mode},
+            )
+            if icl.allowed:
+                await maybe_reset_pnl_periods(orch.portfolio)
+            if await is_reconciliation_degraded():
+                await orch.execution.retry_reconciliation()
+            await orch.refresh_control_cache()
+        except Exception as e:
+            audit("control_refresh_failed", error=str(e))
+        await asyncio.sleep(3)
+
+
+async def _lifecycle_loop() -> None:
+    cfg = get_settings()
+    while True:
+        try:
+            await orch.lifecycle.tick()
+        except Exception as e:
+            audit("lifecycle_tick_failed", error=str(e))
+        await asyncio.sleep(cfg.lifecycle_poll_sec)
+
+
+async def _autonomous_loop() -> None:
+    cfg = get_settings()
+    while True:
+        try:
+            await orch.autonomous.tick()
+        except Exception as e:
+            audit("autonomous_tick_failed", error=str(e))
+        await asyncio.sleep(cfg.autonomous_scan_interval_sec)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    global _refresh_task, _lifecycle_task, _autonomous_task
     setup_logging()
     try:
         await init_db()
+        from services.compliance.recorder import crce
+
+        await crce.recover()
         await orch.startup()
+        _refresh_task = asyncio.create_task(_control_refresh_loop())
+        _lifecycle_task = asyncio.create_task(_lifecycle_loop())
+        _autonomous_task = asyncio.create_task(_autonomous_loop())
     except Exception as e:
         audit("startup_failed", error=str(e))
     yield
+    for task in (_refresh_task, _lifecycle_task, _autonomous_task):
+        if task:
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
     try:
         await orch.shutdown()
     except Exception as e:
@@ -47,9 +112,10 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=cors_allowed_origins(),
+    allow_credentials=True,
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type", "X-API-Key"],
 )
 app.add_middleware(EnvelopeMiddleware)
 register_exception_handlers(app)
@@ -103,13 +169,23 @@ class ModeRequest(BaseModel):
     mode: Literal["paper", "shadow", "live"]
 
 
+class GovernanceStateRequest(BaseModel):
+    model_config = ConfigDict(strict=True)
+
+    state: Literal["ACTIVE", "THROTTLED", "PAUSED", "DISABLED", "KILLED"]
+    reason: str = ""
+    throttle_factor: float | None = None
+
+
 @app.get("/")
 async def index():
     index_path = UI_DIR / "index.html"
     if not index_path.is_file():
         raise HTTPException(404, "UI not found")
     base = _base_path()
+    api_key = resolve_api_access_key()
     html = index_path.read_text(encoding="utf-8").replace("__BASE_PATH__", base)
+    html = html.replace("__API_KEY__", api_key)
     return HTMLResponse(html)
 
 
@@ -153,24 +229,63 @@ async def regime(symbol: str):
     }
 
 
-@app.post("/api/analyze")
+@app.post("/api/analyze", dependencies=[Depends(require_api_auth)])
 async def analyze(req: AnalyzeRequest):
     return await orch.analyze_symbol(req.symbol)
 
 
-@app.post("/api/backtest")
+@app.post("/api/backtest", dependencies=[Depends(require_api_auth)])
 async def backtest(req: BacktestRequest):
     return orch.run_backtest(req.symbol, req.strategy)
 
 
 @app.get("/api/strategies")
 async def strategies():
+    from services.governance.engine import strategy_governance
     from services.strategies.engine import STRATEGY_REGISTRY
+
+    await strategy_governance.ensure_loaded()
     return {
         "strategies": list(STRATEGY_REGISTRY.keys()),
         "ranking": orch.strategy_lab.ranking(),
         "enabled": orch.strategy_lab.enabled_strategies(),
+        "governance": strategy_governance.status(),
     }
+
+
+@app.get("/api/governance/status")
+async def governance_status():
+    from services.governance.engine import strategy_governance
+
+    await strategy_governance.ensure_loaded()
+    return strategy_governance.status()
+
+
+@app.post("/api/governance/strategy/{name}", dependencies=[Depends(require_api_auth)])
+async def governance_set_state(name: str, req: GovernanceStateRequest):
+    from services.icb.actions import ICBAction
+    from services.icb.engine import icb
+    from services.governance.engine import strategy_governance
+    from services.governance.states import StrategyState
+
+    icb_result = await icb.authorize(
+        ICBAction.GOVERNANCE_CHANGE,
+        {"portfolio": orch.portfolio, "trading_mode": get_settings().trading_mode, "strategy": name},
+    )
+    if not icb_result.allowed:
+        raise HTTPException(403, icb_result.reason)
+
+    await strategy_governance.ensure_loaded()
+    result = await strategy_governance.set_state(
+        name,
+        StrategyState(req.state),
+        reason=req.reason,
+        actor="admin",
+        throttle_factor=req.throttle_factor,
+    )
+    if not result.get("ok"):
+        raise HTTPException(400, result.get("message", "Governance update failed"))
+    return result
 
 
 @app.get("/api/risk/limits")
@@ -242,7 +357,7 @@ async def kite_status():
     return await kite_auth.get_status()
 
 
-@app.get("/api/kite/login")
+@app.get("/api/kite/login", dependencies=[Depends(require_api_auth)])
 async def kite_login():
     from services.brokers.kite_auth import kite_auth
     try:
@@ -274,7 +389,7 @@ async def kite_callback(
         return RedirectResponse(_app_url(f"/?kite=error&reason={reason}"))
 
 
-@app.post("/api/kite/disconnect")
+@app.post("/api/kite/disconnect", dependencies=[Depends(require_api_auth)])
 async def kite_disconnect():
     from services.brokers.kite_auth import kite_auth
 
@@ -284,8 +399,18 @@ async def kite_disconnect():
     return {"ok": True, "message": "Kite session cleared"}
 
 
-@app.post("/api/mode")
+@app.post("/api/mode", dependencies=[Depends(require_api_auth)])
 async def set_mode(req: ModeRequest):
+    from services.control.actions import ControlAction
+    from services.control.layer import control_layer
+
+    icl = await control_layer.allow(
+        ControlAction.TOGGLE_MODE,
+        {"portfolio": orch.portfolio, "trading_mode": req.mode},
+    )
+    if not icl.allowed:
+        raise HTTPException(403, icl.reason)
+
     mode = req.mode
     if mode == "live":
         blockers = await orch.execution.live_blockers()
@@ -300,37 +425,64 @@ async def set_mode(req: ModeRequest):
     get_settings.cache_clear()
     orch.cfg = get_settings()
     orch.execution.refresh_broker()
+    from services.control.layer import control_layer
+
+    await control_layer.sync_trading_mode_state(mode)
     return {"mode": mode, "message": f"Switched to {mode} mode"}
 
 
-@app.post("/api/emergency/shutdown")
+@app.get("/api/risk/pnl/live")
+async def live_pnl():
+    return await orch.live_pnl()
+
+
+@app.get("/api/risk/status")
+async def risk_status():
+    from services.control.halt import get_cached_risk
+
+    cached = await get_cached_risk()
+    if cached:
+        return cached
+    pnl = await orch.live_pnl()
+    return orch.risk_status(pnl)
+
+
+@app.get("/api/risk/trades/recent")
+async def recent_trades(limit: int = Query(default=30, ge=1, le=100)):
+    return {"events": recent_trade_events(limit)}
+
+
+@app.post("/api/admin/kill-switch/on", dependencies=[Depends(require_api_auth)])
+async def kill_switch_on():
+    return await orch.activate_kill_switch()
+
+
+@app.post("/api/admin/kill-switch/off", dependencies=[Depends(require_api_auth)])
+async def kill_switch_off():
+    return await orch.resume_trading()
+
+
+@app.post("/api/admin/flatten-all", dependencies=[Depends(require_api_auth)])
+async def admin_flatten_all():
+    return await orch.emergency_flatten()
+
+
+@app.post("/api/emergency/shutdown", dependencies=[Depends(require_api_auth)])
 async def emergency_shutdown():
     return await orch.activate_kill_switch()
 
 
-@app.post("/api/emergency/resume")
+@app.post("/api/emergency/resume", dependencies=[Depends(require_api_auth)])
 async def emergency_resume():
-    if not orch.portfolio.is_trading_halted():
-        return {
-            "ok": True,
-            "message": "Trading already active",
-            "trading_halted": False,
-        }
-    orch.portfolio.resume_trading()
-    await orch.portfolio.persist()
-    return {
-        "ok": True,
-        "message": "Emergency cleared — trading resumed (paper/shadow/live per mode)",
-        "trading_halted": False,
-    }
+    return await orch.resume_trading()
 
 
-@app.post("/api/emergency/flatten")
+@app.post("/api/emergency/flatten", dependencies=[Depends(require_api_auth)])
 async def emergency_flatten():
     return await orch.emergency_flatten()
 
 
-@app.post("/api/backtest/validate")
+@app.post("/api/backtest/validate", dependencies=[Depends(require_api_auth)])
 async def backtest_validate(req: BacktestRequest):
     result = orch.run_backtest(req.symbol, req.strategy)
     return {
@@ -339,12 +491,106 @@ async def backtest_validate(req: BacktestRequest):
     }
 
 
-@app.get("/api/execution/dlq")
+@app.get("/api/execution/dlq", dependencies=[Depends(require_api_auth)])
 async def execution_dlq():
     return {
         "pending": await orch.execution.dead_letter_pending(),
         "circuit": orch.execution.circuit_status(),
     }
+
+
+@app.get("/api/autonomous/status", dependencies=[Depends(require_api_auth)])
+async def autonomous_status():
+    return await orch.autonomous.status()
+
+
+@app.post("/api/autonomous/start", dependencies=[Depends(require_api_auth)])
+async def autonomous_start():
+    result = await orch.autonomous.start()
+    if not result.get("ok"):
+        blockers = result.get("blockers") or ["unknown blocker"]
+        raise HTTPException(403, f"Autonomous start blocked: {', '.join(blockers)}")
+    return result
+
+
+@app.post("/api/autonomous/stop", dependencies=[Depends(require_api_auth)])
+async def autonomous_stop():
+    return await orch.autonomous.stop()
+
+
+@app.get("/api/control/status")
+async def control_status():
+    from services.icb.engine import icb
+
+    return await icb.status(
+        {"portfolio": orch.portfolio, "trading_mode": get_settings().trading_mode},
+    )
+
+
+@app.get("/api/icb/status")
+async def icb_status():
+    from services.icb.engine import icb
+
+    return await icb.status(
+        {"portfolio": orch.portfolio, "trading_mode": get_settings().trading_mode},
+    )
+
+
+@app.post("/api/icb/override", dependencies=[Depends(require_api_auth)])
+async def icb_override(state: str = Query(...), reason: str = Query(default="")):
+    from services.icb.overrides import admin_set_state
+    from services.icb.system_state import SystemState
+
+    try:
+        target = SystemState(state.upper())
+    except ValueError as exc:
+        raise HTTPException(400, f"Invalid system state: {state}") from exc
+    return await admin_set_state(target, reason or f"Admin set {target.value}")
+
+
+@app.post("/api/icb/clear-emergency", dependencies=[Depends(require_api_auth)])
+async def icb_clear_emergency():
+    from services.icb.overrides import admin_clear_emergency_lock
+
+    return await admin_clear_emergency_lock()
+
+
+@app.post("/api/admin/reset-kill-switch", dependencies=[Depends(require_api_auth)])
+async def admin_reset_kill_switch():
+    return await orch.admin_reset_kill_switch()
+
+
+@app.get("/api/compliance/integrity")
+async def compliance_integrity():
+    from services.compliance.store import EventStore
+
+    return EventStore().verify_chain()
+
+
+@app.get("/api/compliance/events", dependencies=[Depends(require_api_auth)])
+async def compliance_events(limit: int = Query(default=100, ge=1, le=1000)):
+    from services.compliance.store import EventStore
+
+    events = EventStore().load_all()
+    return {"count": len(events), "events": events[-limit:]}
+
+
+@app.post("/api/compliance/replay", dependencies=[Depends(require_api_auth)])
+async def compliance_replay():
+    from services.compliance.recorder import portfolio_snapshot
+    from services.compliance.replay import ReplayEngine
+
+    reference = {"portfolio": portfolio_snapshot(orch.portfolio)}
+    return ReplayEngine().replay(reference_snapshot=reference)
+
+
+@app.post("/api/compliance/report", dependencies=[Depends(require_api_auth)])
+async def compliance_report():
+    from services.compliance.recorder import portfolio_snapshot
+    from services.compliance.reports import ComplianceReportGenerator
+
+    reference = {"portfolio": portfolio_snapshot(orch.portfolio)}
+    return ComplianceReportGenerator().generate(reference_snapshot=reference)
 
 
 @app.get("/api/metrics")
@@ -357,4 +603,108 @@ async def metrics():
     from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 
     return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
+
+
+@app.websocket("/ws/system")
+async def ws_system(ws: WebSocket):
+    """Optional real-time feed — multiplexes PnL, risk, trades, system state."""
+    try:
+        await require_ws_auth(ws)
+    except HTTPException:
+        await ws.close(code=4401)
+        return
+    await ws.accept()
+    try:
+        while True:
+            pnl = await orch.live_pnl()
+            risk = orch.risk_status(pnl)
+            payload = {
+                "pnl": pnl,
+                "risk": risk,
+                "trades": recent_trade_events(10),
+                "halted": orch.portfolio.is_trading_halted(),
+            }
+            await ws.send_text(json.dumps(payload, default=str))
+            await asyncio.sleep(3)
+    except WebSocketDisconnect:
+        return
+    except Exception:
+        await ws.close()
+
+
+@app.get("/api/chaos/scenarios", dependencies=[Depends(require_api_auth)])
+async def chaos_scenarios():
+    from services.chaos.scenarios import CHAOS_SCENARIOS
+
+    return [
+        {
+            "id": s.id,
+            "name": s.name,
+            "category": s.category.value,
+            "latency_profile": s.latency_profile.value,
+        }
+        for s in CHAOS_SCENARIOS
+    ]
+
+
+@app.post("/api/chaos/run", dependencies=[Depends(require_api_auth)])
+async def chaos_run(quick: bool = Query(default=True)):
+    from services.chaos.chaos_engine import chaos_engine
+    from services.icb.actions import ICBAction
+    from services.icb.engine import icb
+
+    icb_result = await icb.authorize(
+        ICBAction.RUN_CHAOS,
+        {"portfolio": orch.portfolio, "trading_mode": get_settings().trading_mode},
+    )
+    if not icb_result.allowed:
+        raise HTTPException(403, icb_result.reason)
+
+    return await chaos_engine.run_suite(quick=quick)
+
+
+@app.post("/api/chaos/run/{scenario_id}", dependencies=[Depends(require_api_auth)])
+async def chaos_run_scenario(scenario_id: str):
+    from services.chaos.chaos_engine import chaos_engine
+    from services.icb.actions import ICBAction
+    from services.icb.engine import icb
+
+    icb_result = await icb.authorize(
+        ICBAction.RUN_CHAOS,
+        {"portfolio": orch.portfolio, "trading_mode": get_settings().trading_mode},
+    )
+    if not icb_result.allowed:
+        raise HTTPException(403, icb_result.reason)
+
+    try:
+        result = await chaos_engine.run_scenario(scenario_id)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    return {
+        "scenario_id": result.scenario_id,
+        "passed": result.passed,
+        "safe": result.safe,
+        "duration_ms": result.duration_ms,
+        "failures": result.failures,
+    }
+
+
+@app.get("/api/chaos/report", dependencies=[Depends(require_api_auth)])
+async def chaos_report():
+    from services.chaos.chaos_engine import chaos_engine
+    from services.chaos.live_gate import ChaosLiveGate
+
+    if chaos_engine.last_report is None:
+        report = ChaosLiveGate.load_report()
+        if report is None:
+            raise HTTPException(404, "No chaos report available — run /api/chaos/run first")
+        return report
+    return chaos_engine.last_report
+
+
+@app.get("/api/chaos/gate")
+async def chaos_gate_status():
+    from services.chaos.live_gate import ChaosLiveGate
+
+    return ChaosLiveGate.status()
 

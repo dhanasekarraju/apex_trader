@@ -313,3 +313,56 @@ class KiteBroker(BrokerAdapter):
                 }
             )
         return out
+
+    async def fetch_order_status(self, broker_order_id: str) -> dict:
+        if not self._kite:
+            return {"status": "UNKNOWN", "average_price": 0.0}
+        loop = asyncio.get_event_loop()
+        try:
+            history = await loop.run_in_executor(
+                None, partial(self._kite.order_history, broker_order_id)
+            )
+            if not history:
+                return {"status": "UNKNOWN", "average_price": 0.0}
+            last = history[-1]
+            return {
+                "status": last.get("status", "UNKNOWN"),
+                "average_price": float(last.get("average_price") or 0),
+                "filled_quantity": float(last.get("filled_quantity") or 0),
+            }
+        except Exception as e:
+            audit("kite_order_status_failed", order_id=broker_order_id, error=str(e))
+            return {"status": "UNKNOWN", "average_price": 0.0}
+
+    async def flatten_symbol(self, symbol: str) -> int:
+        if not self._kite:
+            return 0
+        sym = symbol.upper()
+        loop = asyncio.get_event_loop()
+        count = 0
+        try:
+            positions_resp = await loop.run_in_executor(None, self._kite.positions)
+            for pos in self._net_positions(positions_resp):
+                if pos.get("tradingsymbol", "").upper() != sym:
+                    continue
+                qty = int(pos.get("quantity", 0))
+                side, close_qty = self._flatten_side(qty)
+                if close_qty <= 0:
+                    continue
+                product = pos.get("product", self.cfg.kite_product)
+                exchange = pos.get("exchange", self.cfg.kite_exchange)
+                req = OrderRequest(
+                    symbol=sym,
+                    side=side,
+                    qty=close_qty,
+                    order_type=OrderType.MARKET,
+                    client_order_id=f"flatten-{sym[:8]}",
+                    metadata={"product": product, "exchange": exchange},
+                )
+                params = self._build_params(req, close_qty)
+                await self._submit_order(params)
+                count += 1
+        except Exception as e:
+            audit("kite_flatten_symbol_failed", symbol=sym, error=str(e))
+        audit("kite_flatten_symbol", symbol=sym, count=count)
+        return count

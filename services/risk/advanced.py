@@ -53,19 +53,29 @@ class AdvancedRiskEngine(RiskEngine):
                 reason=f"Data quality {state.data_quality_score:.2f} below threshold",
             )
 
-        sector_exp = state.sector_exposure.get(proposal.correlation_bucket, 0)
-        sector_ok = sector_exp < cfg.max_sector_concentration_pct
-        checks.append(RiskCheck(
-            "sector_concentration", bool(sector_ok),
-            f"Sector {proposal.correlation_bucket} exposure {sector_exp:.1f}%",
-        ))
+        if cfg.enforce_sector_correlation_limits:
+            sector_exp = state.sector_exposure.get(proposal.correlation_bucket, 0)
+            sector_ok = sector_exp < cfg.max_sector_concentration_pct
+            checks.append(RiskCheck(
+                "sector_concentration", bool(sector_ok),
+                f"Sector {proposal.correlation_bucket} exposure {sector_exp:.1f}%",
+            ))
 
-        corr_exp = state.correlation_exposure.get(proposal.correlation_bucket, 0)
-        corr_ok = corr_exp < cfg.max_correlated_exposure_pct
-        checks.append(RiskCheck(
-            "correlation", bool(corr_ok),
-            f"Correlated exposure {corr_exp:.1f}%",
-        ))
+            corr_exp = state.correlation_exposure.get(proposal.correlation_bucket, 0)
+            corr_ok = corr_exp < cfg.max_correlated_exposure_pct
+            checks.append(RiskCheck(
+                "correlation", bool(corr_ok),
+                f"Correlated exposure {corr_exp:.1f}%",
+            ))
+        else:
+            checks.append(RiskCheck(
+                "sector_concentration", True,
+                "Sector limits disabled until exposure engine implemented",
+            ))
+            checks.append(RiskCheck(
+                "correlation", True,
+                "Correlation limits disabled until exposure engine implemented",
+            ))
 
         monthly_limit = state.equity * cfg.max_monthly_loss_pct / 100
         monthly_ok = state.monthly_pnl >= -monthly_limit

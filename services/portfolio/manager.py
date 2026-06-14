@@ -42,6 +42,72 @@ class PortfolioManager:
         ok = await self.repo.add_position(self.state, pos, confidence=confidence)
         if ok:
             self.persistence_ok = await self.repo.save(self.state)
+        from services.compliance.events import EventType
+        from services.compliance.recorder import crce
+
+        await crce.record(
+            event_type=EventType.PORTFOLIO_UPDATE,
+            action="RECORD_FILL",
+            symbol=pos.symbol,
+            decision="EXECUTED",
+            reason=f"fill qty={pos.qty} entry={pos.entry}",
+            portfolio=self,
+        )
+        return ok and self.persistence_ok
+
+    async def record_exit(
+        self,
+        *,
+        symbol: str,
+        exit_price: float,
+        exit_reason: str,
+        pnl: float,
+    ) -> bool:
+        sym = symbol.upper()
+        pos = next((p for p in self.state.positions if p.symbol.upper() == sym), None)
+        if pos is None:
+            return False
+
+        proceeds = pos.qty * exit_price
+        self.state.cash += proceeds
+        self.state.daily_pnl += pnl
+        self.state.weekly_pnl += pnl
+        self.state.monthly_pnl += pnl
+        self.state.equity += pnl
+        if self.state.equity > self.state.peak_equity:
+            self.state.peak_equity = self.state.equity
+
+        if pnl < 0:
+            self.state.consecutive_losses += 1
+        else:
+            self.state.consecutive_losses = 0
+
+        self.state.positions = [
+            p for p in self.state.positions if p.symbol.upper() != sym
+        ]
+
+        ok = await self.repo.close_position(
+            self.state,
+            symbol=sym,
+            exit_price=exit_price,
+            exit_reason=exit_reason,
+            pnl=pnl,
+        )
+        if ok:
+            self.persistence_ok = await self.repo.save(self.state)
+        from services.compliance.events import EventType
+        from services.compliance.recorder import crce
+
+        await crce.record(
+            event_type=EventType.PORTFOLIO_UPDATE,
+            action="RECORD_EXIT",
+            symbol=sym,
+            decision="EXECUTED",
+            reason=f"{exit_reason} pnl={pnl}",
+            portfolio=self,
+            exit_price=exit_price,
+            pnl=pnl,
+        )
         return ok and self.persistence_ok
 
     def emergency_shutdown(self) -> None:

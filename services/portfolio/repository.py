@@ -132,6 +132,46 @@ class PortfolioRepository:
             audit("portfolio_close_all_failed", error=str(e))
             return False
 
+    async def close_position(
+        self,
+        state: PortfolioState,
+        *,
+        symbol: str,
+        exit_price: float,
+        exit_reason: str,
+        pnl: float,
+    ) -> bool:
+        try:
+            async with SessionLocal() as session:
+                result = await session.execute(
+                    select(Position).where(
+                        Position.symbol == symbol.upper(),
+                        Position.status == "open",
+                    )
+                )
+                db_pos = result.scalar_one_or_none()
+                if db_pos is None:
+                    return False
+                db_pos.status = "closed"
+                db_pos.exit_reason = exit_reason
+                db_pos.pnl = pnl
+                db_pos.closed_at = __import__("datetime").datetime.now(
+                    __import__("datetime").timezone.utc
+                )
+
+                state.positions = [
+                    p for p in state.positions if p.symbol.upper() != symbol.upper()
+                ]
+                row = await session.get(SystemState, self._SINGLETON_ID)
+                if row:
+                    await self._flush_state(session, row, state)
+                await session.commit()
+                audit("portfolio_position_closed", symbol=symbol, reason=exit_reason, pnl=pnl)
+                return True
+        except Exception as e:
+            audit("portfolio_close_position_failed", error=str(e), symbol=symbol)
+            return False
+
     async def is_healthy(self) -> bool:
         try:
             async with SessionLocal() as session:

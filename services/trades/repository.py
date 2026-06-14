@@ -100,3 +100,15 @@ class TradeRepository:
                 select(TradeRecord).where(TradeRecord.status.in_(open_status))
             )
             return list(result.scalars().all())
+
+    async def get_open_by_symbol(self, symbol: str) -> TradeRecord | None:
+        open_status = {"pending", "submitted", "filled", "sl_placed"}
+        async with SessionLocal() as session:
+            result = await session.execute(
+                select(TradeRecord)
+                .where(TradeRecord.symbol == symbol.upper())
+                .where(TradeRecord.status.in_(open_status))
+                .order_by(TradeRecord.created_at.desc())
+                .limit(1)
+            )
+            return result.scalar_one_or_none()

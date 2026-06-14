@@ -6,6 +6,8 @@ cd "$(dirname "$0")/.."
 # Direct backend: http://127.0.0.1:8080
 # Behind nginx:   https://veldaris.in/apex
 BASE="${1:-http://127.0.0.1:8080}"
+API_KEY="${APEX_API_KEY:-$(python3 -c "import hashlib; print(hashlib.sha256(b'test-secret-for-ci').hexdigest()[:32])" 2>/dev/null || echo test-api-key-for-ci)}"
+AUTH=(-H "X-API-Key: $API_KEY")
 PASS=0
 FAIL=0
 
@@ -78,16 +80,16 @@ else bad "dashboard failed"; fi
 echo ""
 echo "[6] Regime + analyze pipeline"
 if json "$BASE/api/regime/RELIANCE" >/dev/null; then ok "regime"; else bad "regime"; fi
-AN=$(curl -sf -X POST "$BASE/api/analyze" -H 'Content-Type: application/json' -d '{"symbol":"RELIANCE"}')
+AN=$(curl -sf -X POST "$BASE/api/analyze" "${AUTH[@]}" -H 'Content-Type: application/json' -d '{"symbol":"RELIANCE"}')
 echo "$AN" | pyunwrap "d=unwrap(json.load(sys.stdin)); print('  action:', d.get('action'), '| reason:', (d.get('risk_reason') or d.get('reason') or '')[:60])"
 ok "analyze"
 
 echo ""
 echo "[7] Backtest + validate"
-BT=$(curl -sf -X POST "$BASE/api/backtest" -H 'Content-Type: application/json' -d '{"symbol":"RELIANCE","strategy":"momentum"}')
+BT=$(curl -sf -X POST "$BASE/api/backtest" "${AUTH[@]}" -H 'Content-Type: application/json' -d '{"symbol":"RELIANCE","strategy":"momentum"}')
 echo "$BT" | pyunwrap "d=unwrap(json.load(sys.stdin)); print('  trades:', d.get('total_trades'), 'sharpe:', d.get('sharpe'))"
 ok "backtest"
-BV=$(curl -sf -X POST "$BASE/api/backtest/validate" -H 'Content-Type: application/json' -d '{"symbol":"RELIANCE"}')
+BV=$(curl -sf -X POST "$BASE/api/backtest/validate" "${AUTH[@]}" -H 'Content-Type: application/json' -d '{"symbol":"RELIANCE"}')
 echo "$BV" | pyunwrap "d=unwrap(json.load(sys.stdin)); print('  passed_validation:', d.get('passed_validation'))"
 ok "backtest validate"
 
@@ -100,46 +102,65 @@ json "$BASE/api/risk/limits" >/dev/null && ok "risk limits" || bad "risk limits"
 
 echo ""
 echo "[9] Mode switch (paper -> shadow -> paper)"
-M1=$(curl -sf -X POST "$BASE/api/mode" -H 'Content-Type: application/json' -d '{"mode":"shadow"}')
+M1=$(curl -sf -X POST "$BASE/api/mode" "${AUTH[@]}" -H 'Content-Type: application/json' -d '{"mode":"shadow"}')
 echo "$M1" | pyunwrap "d=unwrap(json.load(sys.stdin)); print(' ', d.get('mode'))"
-M2=$(curl -sf -X POST "$BASE/api/mode" -H 'Content-Type: application/json' -d '{"mode":"paper"}')
+M2=$(curl -sf -X POST "$BASE/api/mode" "${AUTH[@]}" -H 'Content-Type: application/json' -d '{"mode":"paper"}')
 echo "$M2" | pyunwrap "d=unwrap(json.load(sys.stdin)); print(' ', d.get('mode'))"
 ok "mode switch"
 
 echo ""
 echo "[10] Live mode blocked (safety gate)"
-LC=$(curl -s -o /tmp/live_mode.json -w "%{http_code}" -X POST "$BASE/api/mode" -H 'Content-Type: application/json' -d '{"mode":"live"}')
+LC=$(curl -s -o /tmp/live_mode.json -w "%{http_code}" -X POST "$BASE/api/mode" "${AUTH[@]}" -H 'Content-Type: application/json' -d '{"mode":"live"}')
 if [[ "$LC" == "403" ]]; then ok "live correctly blocked (403)"; else
   echo "  HTTP $LC"; cat /tmp/live_mode.json; bad "live should be blocked"; fi
 
 echo ""
 echo "[11] Emergency shutdown + halt blocks analyze"
-curl -sf -X POST "$BASE/api/emergency/shutdown" >/dev/null
-HALT=$(curl -sf -X POST "$BASE/api/analyze" -H 'Content-Type: application/json' -d '{"symbol":"RELIANCE"}')
+curl -sf -X POST "$BASE/api/emergency/shutdown" "${AUTH[@]}" >/dev/null
+HALT=$(curl -sf -X POST "$BASE/api/analyze" "${AUTH[@]}" -H 'Content-Type: application/json' -d '{"symbol":"RELIANCE"}')
 echo "$HALT" | pyunwrap "d=unwrap(json.load(sys.stdin)); print('  action:', d.get('action')); assert d.get('action')!='BUY'"
 ok "emergency halt blocks trades"
 
 echo ""
 echo "[12] Flatten endpoint"
-FL=$(curl -sf -X POST "$BASE/api/emergency/flatten")
+FL=$(curl -sf -X POST "$BASE/api/emergency/flatten" "${AUTH[@]}")
 echo "$FL" | python3 -m json.tool 2>/dev/null || echo "$FL"
 ok "flatten endpoint"
 
 echo ""
-echo "[13] Resume trading (clear emergency)"
-RS=$(curl -sf -X POST "$BASE/api/emergency/resume")
+echo "[13] Admin reset after kill switch + resume"
+RESET=$(curl -sf -X POST "$BASE/api/admin/reset-kill-switch" "${AUTH[@]}" 2>/dev/null || echo '{"success":false}')
+echo "$RESET" | pyunwrap "d=unwrap(json.load(sys.stdin)); print('  reset:', d.get('ok'), d.get('message','')[:60])" 2>/dev/null || echo "  (reset skipped if not kill switched)"
+RS=$(curl -sf -X POST "$BASE/api/emergency/resume" "${AUTH[@]}")
 echo "$RS" | pyunwrap "d=unwrap(json.load(sys.stdin)); assert d.get('ok'); print(' ', d.get('message'))"
 D=$(curl -sf "$BASE/api/dashboard")
 echo "$D" | pyunwrap "d=unwrap(json.load(sys.stdin)); p=d['portfolio']; assert not p.get('trading_halted'); print('  trading_halted:', p.get('trading_halted'))"
 ok "resume trading"
 
 echo ""
-echo "[14] UI index"
+echo "[14] Autonomous engine"
+AS=$(json "$BASE/api/autonomous/status" "${AUTH[@]}")
+echo "$AS" | pyunwrap "
+d=unwrap(json.load(sys.stdin))
+print('  running:', d.get('running'))
+print('  watchlist:', d.get('watchlist_count'))
+print('  session:', d.get('session'))
+"
+ok "autonomous status"
+AST=$(curl -sf -X POST "$BASE/api/autonomous/start" "${AUTH[@]}")
+echo "$AST" | pyunwrap "d=unwrap(json.load(sys.stdin)); print('  started:', d.get('running'))"
+ok "autonomous start"
+ASP=$(curl -sf -X POST "$BASE/api/autonomous/stop" "${AUTH[@]}")
+echo "$ASP" | pyunwrap "d=unwrap(json.load(sys.stdin)); assert not d.get('running'); print('  stopped')"
+ok "autonomous stop"
+
+echo ""
+echo "[15] UI index"
 CODE=$(curl -s -o /tmp/index.html -w "%{http_code}" "$BASE/")
 if [[ "$CODE" == "200" ]] && grep -q "Apex Trader" /tmp/index.html; then ok "UI index ($CODE)"; else bad "UI index ($CODE)"; fi
 
 echo ""
-echo "[15] Kite login redirect"
+echo "[16] Kite login redirect"
 CODE=$(curl -s -o /dev/null -w "%{http_code}" -L "$BASE/api/kite/login" 2>/dev/null | tail -1 || curl -s -o /dev/null -w "%{http_code}" "$BASE/api/kite/login")
 # 307/302 to kite, or 400 if no api key
 if [[ "$CODE" =~ ^(302|307|400)$ ]]; then ok "kite login route ($CODE)"; else bad "kite login ($CODE)"; fi

@@ -51,7 +51,7 @@ async def test_execution_blocks_when_halted():
     )
     result = await engine.place_order(req, 2500)
     assert result.status == OrderStatus.REJECTED
-    assert "Kill switch" in result.message
+    assert "blocked" in result.message.lower()
 
 
 @pytest.mark.asyncio
@@ -60,7 +60,7 @@ async def test_orchestrator_blocks_analyze_when_halted():
     orch.portfolio.emergency_shutdown()
     decision = await orch.analyze_symbol("RELIANCE")
     assert decision["action"] == "NO_TRADE"
-    assert "Kill switch" in decision["reason"]
+    assert "blocked" in decision["reason"].lower() or "halt" in decision["reason"].lower()
 
 
 @pytest.mark.asyncio

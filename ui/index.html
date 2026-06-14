@@ -19,7 +19,9 @@
       </div>
     </div>
     <div class="pills">
+      <span class="pill" id="systemStatusPill">System —</span>
       <span class="pill live" id="modePill">PAPER</span>
+      <span class="pill" id="livePnlPill">PnL —</span>
       <span class="pill" id="readinessPill">Go-live —</span>
       <span class="pill" id="regimePill">Regime —</span>
       <span class="pill" id="heatPill">Heat —</span>
@@ -29,11 +31,19 @@
         <option value="live">Live (gated)</option>
       </select>
       <button class="btn ghost" onclick="loadDashboard()">Refresh</button>
-      <button class="btn danger" onclick="emergencyShutdown()">Emergency stop</button>
-      <button class="btn danger" onclick="emergencyFlatten()">Flatten all</button>
+      <button class="btn kill-switch" id="killSwitchBtn" onclick="killSwitchOn()">KILL SWITCH</button>
       <button class="btn" id="resumeBtn" onclick="resumeTrading()" style="display:none;background:linear-gradient(135deg,#b45309,#f59e0b)">Resume trading</button>
     </div>
   </header>
+
+  <div class="cockpit-bar card" id="cockpitBar">
+    <div class="cockpit-metric"><span class="metric-sub">Live portfolio PnL</span><span class="metric" id="livePortfolioPnl">—</span></div>
+    <div class="cockpit-metric"><span class="metric-sub">Daily PnL</span><span class="metric" id="liveDailyPnl">—</span></div>
+    <div class="cockpit-metric"><span class="metric-sub">Exposure</span><span class="metric" id="liveExposure">—</span></div>
+    <div class="cockpit-metric"><span class="metric-sub">Margin est.</span><span class="metric" id="liveMargin">—</span></div>
+    <div class="cockpit-metric"><span class="metric-sub">Risk status</span><span class="metric" id="riskStatusLabel">—</span></div>
+    <div class="cockpit-metric"><span class="metric-sub">Kill switch</span><span class="metric" id="killSwitchLabel">OFF</span></div>
+  </div>
 
   <div class="principles" id="principles"></div>
 
@@ -71,6 +81,25 @@
   </div>
 
   <div class="grid grid-3" style="margin-bottom:16px">
+    <div class="card autonomous-card">
+      <div class="autonomous-header">
+        <h2>Autonomous engine</h2>
+        <span class="pill" id="autonomousPill">AUTO — OFF</span>
+      </div>
+      <p class="metric-sub" style="margin-bottom:12px">Institutional A→Z scan — watchlist → analyze → risk → execute. No bypass.</p>
+      <div class="autonomous-stats" id="autonomousStats">
+        <div><span class="metric-sub">Session</span><span id="autoSession">—</span></div>
+        <div><span class="metric-sub">Watchlist</span><span id="autoWatchlist">—</span></div>
+        <div><span class="metric-sub">Last cycle</span><span id="autoLastCycle">—</span></div>
+        <div><span class="metric-sub">Scanned / Buy</span><span id="autoCycleStats">—</span></div>
+      </div>
+      <div id="autoBlockers" class="metric-sub" style="margin:10px 0;display:none;color:var(--amber)"></div>
+      <div id="autoRecent" class="auto-recent"><div class="empty">Autonomous idle — start to scan watchlist</div></div>
+      <div class="input-row" style="margin-top:12px;margin-bottom:0">
+        <button class="btn" id="autoStartBtn" onclick="startAutonomous()">Start autonomous</button>
+        <button class="btn ghost" id="autoStopBtn" onclick="stopAutonomous()" style="display:none">Stop</button>
+      </div>
+    </div>
     <div class="card">
       <h2>Signal analysis</h2>
       <div class="input-row">
@@ -94,7 +123,7 @@
       <h2>Open positions</h2>
       <div style="overflow-x:auto">
         <table>
-          <thead><tr><th>Symbol</th><th>Qty</th><th>Entry</th><th>SL</th><th>Target</th><th>Strategy</th><th>Risk%</th></tr></thead>
+          <thead><tr><th>Symbol</th><th>Qty</th><th>Entry</th><th>LTP</th><th>Unreal PnL</th><th>Strategy</th><th>Source</th></tr></thead>
           <tbody id="positionsBody"><tr><td colspan="7" class="empty">No open positions</td></tr></tbody>
         </table>
       </div>
@@ -138,11 +167,16 @@
     </div>
   </div>
 
+  <div class="card">
+    <h2>Live trade event stream</h2>
+    <div id="tradeStream" class="trade-stream"><div class="empty">Waiting for trade events…</div></div>
+  </div>
+
   <footer>
     Apex Trader v2.0 · Risk overrides AI · Shadow before live · Catastrophic losses are not acceptable
   </footer>
 </div>
-<script>window.APEX_BASE = '__BASE_PATH__';</script>
+<script>window.APEX_BASE = '__BASE_PATH__'; window.APEX_API_KEY = '__API_KEY__';</script>
 <script src="__BASE_PATH__/assets/app.js"></script>
 </body>
 </html>

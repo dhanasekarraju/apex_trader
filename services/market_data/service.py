@@ -124,3 +124,39 @@ class MarketDataService:
         poc_idx = int(hist.argmax())
         poc = float((edges[poc_idx] + edges[poc_idx + 1]) / 2)
         return {"poc": round(poc, 4), "bins": len(hist)}
+
+    async def fetch_ltps(self, symbols: list[str]) -> dict[str, float]:
+        """Batch LTP fetch for open positions."""
+        if not symbols:
+            return {}
+        if self.has_real_data_configured():
+            return await self._kite_ltps(symbols)
+        out: dict[str, float] = {}
+        for sym in symbols:
+            df = self.synthetic_ohlcv(sym, bars=5)
+            out[sym.upper()] = float(df["close"].iloc[-1])
+        return out
+
+    async def _kite_ltps(self, symbols: list[str]) -> dict[str, float]:
+        try:
+            from kiteconnect import KiteConnect
+        except ImportError:
+            return {}
+        token = kite_auth.get_access_token_sync()
+        if not self.cfg.kite_api_key or not token:
+            return {}
+        try:
+            kite = KiteConnect(api_key=self.cfg.kite_api_key)
+            kite.set_access_token(token)
+            keys = [f"NSE:{s.upper()}" for s in symbols]
+            loop = asyncio.get_event_loop()
+            resp = await loop.run_in_executor(None, partial(kite.ltp, keys))
+            out: dict[str, float] = {}
+            for sym in symbols:
+                key = f"NSE:{sym.upper()}"
+                if key in resp:
+                    out[sym.upper()] = float(resp[key].get("last_price", 0))
+            return out
+        except Exception as e:
+            audit("market_data_ltp_failed", error=str(e))
+            return {}

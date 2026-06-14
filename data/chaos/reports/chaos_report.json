@@ -1,0 +1,137 @@
+{
+  "generated_at": "2026-06-14T05:55:14.097088+00:00",
+  "full_suite": false,
+  "scenario_count": 4,
+  "resilience_score": 81,
+  "stability_classification": "STABLE",
+  "metrics": {
+    "order_success_rate_under_failure_pct": 0.0,
+    "order_rejection_rate_pct": 0.0,
+    "kill_switch_accuracy_pct": 25.0,
+    "reconciliation_drift_rate_pct": 0.0,
+    "duplicate_order_detection_rate_pct": 100.0,
+    "system_recovery_time_ms": 139.2,
+    "portfolio_consistency_score": 100.0,
+    "scenario_pass_rate_pct": 100.0
+  },
+  "failure_breakdown": [],
+  "failure_breakdown_by_category": {},
+  "recovery_timeline": [
+    {
+      "scenario_id": "broker_rejection_spike",
+      "duration_ms": 138.80127300217282,
+      "recovery_time_ms": 138.80127300217282,
+      "passed": true
+    },
+    {
+      "scenario_id": "market_illiquidity",
+      "duration_ms": 212.52832200116245,
+      "recovery_time_ms": 212.52832200116245,
+      "passed": true
+    },
+    {
+      "scenario_id": "system_crce_failure",
+      "duration_ms": 79.32143200014252,
+      "recovery_time_ms": 79.32143200014252,
+      "passed": true
+    },
+    {
+      "scenario_id": "system_risk_timeout",
+      "duration_ms": 126.16730099762208,
+      "recovery_time_ms": 126.16730099762208,
+      "passed": true
+    }
+  ],
+  "trade_integrity": {
+    "portfolio_consistent_scenarios": 4,
+    "total_scenarios": 4,
+    "duplicate_incidents": 0,
+    "unreconciled": 0
+  },
+  "scenario_results": [
+    {
+      "scenario_id": "broker_rejection_spike",
+      "passed": true,
+      "safe": true,
+      "duration_ms": 138.80127300217282,
+      "icb_decision": "ALLOW",
+      "risk_verdict": "NO_TRADE",
+      "execution_status": "NO_TRADE",
+      "reconciliation_ok": true,
+      "portfolio_consistent": true,
+      "kill_switch_triggered": false,
+      "safe_mode_triggered": false,
+      "duplicate_detected": false,
+      "failures": [],
+      "observations": [
+        "ICB: ALLOW \u2014 Authority checks passed"
+      ],
+      "recovery_time_ms": 138.80127300217282
+    },
+    {
+      "scenario_id": "market_illiquidity",
+      "passed": true,
+      "safe": true,
+      "duration_ms": 212.52832200116245,
+      "icb_decision": "ALLOW",
+      "risk_verdict": "NO_TRADE",
+      "execution_status": "NO_TRADE",
+      "reconciliation_ok": true,
+      "portfolio_consistent": true,
+      "kill_switch_triggered": false,
+      "safe_mode_triggered": false,
+      "duplicate_detected": false,
+      "failures": [],
+      "observations": [
+        "ICB: ALLOW \u2014 Authority checks passed"
+      ],
+      "recovery_time_ms": 212.52832200116245
+    },
+    {
+      "scenario_id": "system_crce_failure",
+      "passed": true,
+      "safe": true,
+      "duration_ms": 79.32143200014252,
+      "icb_decision": "ALLOW",
+      "risk_verdict": "NO_TRADE",
+      "execution_status": "NO_TRADE",
+      "reconciliation_ok": true,
+      "portfolio_consistent": true,
+      "kill_switch_triggered": false,
+      "safe_mode_triggered": true,
+      "duplicate_detected": false,
+      "failures": [],
+      "observations": [
+        "ICB: ALLOW \u2014 Authority checks passed"
+      ],
+      "recovery_time_ms": 79.32143200014252
+    },
+    {
+      "scenario_id": "system_risk_timeout",
+      "passed": true,
+      "safe": true,
+      "duration_ms": 126.16730099762208,
+      "icb_decision": "ALLOW",
+      "risk_verdict": "NO_TRADE",
+      "execution_status": "NO_TRADE",
+      "reconciliation_ok": true,
+      "portfolio_consistent": true,
+      "kill_switch_triggered": false,
+      "safe_mode_triggered": false,
+      "duplicate_detected": false,
+      "failures": [],
+      "observations": [
+        "ICB: ALLOW \u2014 Authority checks passed"
+      ],
+      "recovery_time_ms": 126.16730099762208
+    }
+  ],
+  "safe_for_live_capital": false,
+  "live_capital_requirements": {
+    "stability_classification": "INSTITUTIONAL-GRADE",
+    "min_resilience_score": 90,
+    "safe_for_live_capital": true,
+    "full_suite": true,
+    "scenario_count": 25
+  }
+}

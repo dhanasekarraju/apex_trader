@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import asyncio
 
-from services.brokers.base import OrderRequest, OrderResult, OrderStatus
+from services.brokers.base import OrderRequest, OrderResult, OrderStatus, OrderType
 from services.brokers.factory import get_broker
 from services.execution.circuit_breaker import ApiCircuitBreaker
 from services.execution.dead_letter import DeadLetterQueue
+from services.execution.idempotency_store import claim_order_id, release_order_id, seed_order_id
 from services.execution.live_gate import LiveSafetyGate
 from services.execution.reconciliation import reconcile_on_startup
+from services.control.reconciliation_state import is_reconciliation_degraded
 from services.market_data.service import MarketDataService
 from services.portfolio.manager import PortfolioManager
 from services.shadow.engine import ShadowEngine
@@ -44,7 +46,6 @@ class ExecutionEngine:
         self._trades = TradeRepository()
         self._dlq = DeadLetterQueue()
         self._circuit = ApiCircuitBreaker()
-        self._seen_orders: set[str] = set()
 
     def bind(self, portfolio: PortfolioManager, market_data: MarketDataService) -> None:
         self._portfolio = portfolio
@@ -65,7 +66,7 @@ class ExecutionEngine:
         """Rebuild idempotency, reconcile broker positions, resume tracking."""
         open_rows = await self._trades.open_trades()
         for row in open_rows:
-            self._seen_orders.add(row.client_order_id)
+            await seed_order_id(row.client_order_id)
 
         broker_ok = await self.connect()
         reconcile_report: dict = {}
@@ -84,6 +85,42 @@ class ExecutionEngine:
             **reconcile_report,
         }
         audit("execution_recovery", **report)
+        from services.compliance.events import EventType
+        from services.compliance.recorder import crce
+
+        await crce.record(
+            event_type=EventType.RECONCILIATION_RUN,
+            action="RECONCILE_PORTFOLIO",
+            decision="EXECUTED",
+            reason=str(reconcile_report.get("reconciliation_status", "OK")),
+            portfolio=self._portfolio,
+            **{k: v for k, v in reconcile_report.items() if isinstance(v, (str, int, float, bool))},
+        )
+        return report
+
+    async def retry_reconciliation(self) -> dict:
+        """Retry broker reconciliation when in DEGRADED state."""
+        if not await is_reconciliation_degraded():
+            return {"skipped": "not_degraded"}
+        if self._portfolio is None:
+            return {"skipped": "no_portfolio"}
+        report = await reconcile_on_startup(
+            broker=self._broker,
+            portfolio=self._portfolio,
+            trades=self._trades,
+            trading_mode=self.cfg.trading_mode,
+        )
+        audit("reconciliation_retry", **report)
+        from services.compliance.events import EventType
+        from services.compliance.recorder import crce
+
+        await crce.record(
+            event_type=EventType.RECONCILIATION_RUN,
+            action="RECONCILE_RETRY",
+            decision="EXECUTED",
+            reason=str(report.get("reconciliation_status", report.get("skipped", "OK"))),
+            portfolio=self._portfolio,
+        )
         return report
 
     async def shutdown(self) -> None:
@@ -91,12 +128,14 @@ class ExecutionEngine:
             await self._broker.disconnect()
 
     async def place_order(self, req: OrderRequest, market_price: float) -> OrderResult:
-        """Single entry point for all order placement — no bypass allowed."""
-        blocked = self._pre_execution_block(req)
+        """Single entry point for order placement — executes risk-approved orders only."""
+        cfg = get_settings()
+
+        blocked = await self._pre_execution_block(req)
         if blocked:
             return blocked
 
-        if req.client_order_id in self._seen_orders:
+        if req.client_order_id:
             existing = await self._trades.get_by_client_id(req.client_order_id)
             if existing and existing.status in ("filled", "sl_placed"):
                 audit("duplicate_order_blocked", id=req.client_order_id)
@@ -109,13 +148,14 @@ class ExecutionEngine:
                     0,
                     "Duplicate order blocked (idempotent)",
                 )
-            audit("duplicate_order_blocked", id=req.client_order_id)
-            return OrderResult(
-                req.client_order_id, "", OrderStatus.REJECTED, 0, 0, 0,
-                "Duplicate order blocked",
-            )
 
-        self._seen_orders.add(req.client_order_id)
+            if not await claim_order_id(req.client_order_id):
+                audit("duplicate_order_blocked", id=req.client_order_id)
+                return OrderResult(
+                    req.client_order_id, "", OrderStatus.REJECTED, 0, 0, 0,
+                    "Duplicate order blocked",
+                )
+
         cfg = get_settings()
         mode = cfg.trading_mode
 
@@ -128,6 +168,19 @@ class ExecutionEngine:
             stop_loss=req.stop_price,
             take_profit=req.take_profit,
             trading_mode=mode,
+        )
+        from services.compliance.events import EventType
+        from services.compliance.recorder import crce
+
+        await crce.record(
+            event_type=EventType.ORDER_PLACED,
+            action="PLACE_ORDER",
+            symbol=req.symbol,
+            decision="EXECUTED",
+            reason="submitted",
+            portfolio=self._portfolio,
+            client_order_id=req.client_order_id,
+            qty=req.qty,
         )
         trade_log(
             symbol=req.symbol,
@@ -146,6 +199,8 @@ class ExecutionEngine:
         if mode == "paper":
             result = await self._submit_with_stop(req, market_price, cfg)
             await self._record_result(req, result)
+            if result.status in (OrderStatus.FAILED, OrderStatus.REJECTED):
+                await release_order_id(req.client_order_id)
             return result
 
         if mode == "live":
@@ -156,20 +211,37 @@ class ExecutionEngine:
                     "Live blocked: " + "; ".join(blockers[:3]),
                 )
                 await self._record_result(req, result)
+                await release_order_id(req.client_order_id)
                 return result
             result = await self._submit_live(req, market_price, cfg)
             await self._record_result(req, result)
+            if result.status in (OrderStatus.FAILED, OrderStatus.REJECTED):
+                await release_order_id(req.client_order_id)
             return result
 
         result = await self._place_with_retry(req, market_price, cfg)
         await self._record_result(req, result)
+        if result.status in (OrderStatus.FAILED, OrderStatus.REJECTED):
+            await release_order_id(req.client_order_id)
         return result
 
     async def submit(self, req: OrderRequest, market_price: float) -> OrderResult:
         """Backward-compatible alias."""
         return await self.place_order(req, market_price)
 
-    def _pre_execution_block(self, req: OrderRequest) -> OrderResult | None:
+    async def _pre_execution_block(self, req: OrderRequest) -> OrderResult | None:
+        from services.control.halt import is_emergency_halt
+
+        if await is_reconciliation_degraded():
+            return OrderResult(
+                req.client_order_id, "", OrderStatus.REJECTED, 0, 0, 0,
+                "Reconciliation degraded — trading paused until broker sync recovers",
+            )
+        if await is_emergency_halt():
+            return OrderResult(
+                req.client_order_id, "", OrderStatus.REJECTED, 0, 0, 0,
+                "EMERGENCY_HALT active — execution blocked",
+            )
         if self._portfolio and self._portfolio.is_trading_halted():
             return OrderResult(
                 req.client_order_id, "", OrderStatus.REJECTED, 0, 0, 0,
@@ -234,6 +306,34 @@ class ExecutionEngine:
             shadow=shadow,
             broker_order_id=result.broker_order_id,
             message=result.message,
+        )
+        from services.compliance.events import EventType
+        from services.compliance.recorder import crce
+
+        if result.status in (OrderStatus.FILLED, OrderStatus.PARTIAL):
+            et = EventType.ORDER_FILLED
+            decision = "EXECUTED"
+        elif result.status in (OrderStatus.REJECTED, OrderStatus.FAILED):
+            et = EventType.ORDER_REJECTED
+            decision = "FAILED"
+        else:
+            et = EventType.ORDER_PLACED
+            decision = "EXECUTED"
+        await crce.record(
+            event_type=et,
+            action="PLACE_ORDER",
+            symbol=req.symbol,
+            decision=decision,
+            reason=result.message,
+            portfolio=self._portfolio,
+            client_order_id=req.client_order_id,
+            qty=result.filled_qty or req.qty,
+            broker_order_id=result.broker_order_id,
+            metadata={
+                "broker_filled_qty": result.filled_qty,
+                "internal_qty": req.qty,
+                "stop_order_id": result.raw.get("stop_order_id"),
+            },
         )
 
     async def _live_allowed(self) -> tuple[bool, list[str]]:
@@ -304,10 +404,7 @@ class ExecutionEngine:
                     self._circuit.record_success()
                     return result
                 last = result
-                opened = self._circuit.record_failure(result.message)
-                if opened and self._portfolio:
-                    self._portfolio.emergency_shutdown()
-                    await self._portfolio.persist()
+                self._circuit.record_failure(result.message)
             except Exception as e:
                 audit(
                     "order_retry",
@@ -319,10 +416,7 @@ class ExecutionEngine:
                     req.client_order_id, "", OrderStatus.FAILED,
                     0, 0, 0, str(e),
                 )
-                opened = self._circuit.record_failure(str(e))
-                if opened and self._portfolio:
-                    self._portfolio.emergency_shutdown()
-                    await self._portfolio.persist()
+                self._circuit.record_failure(str(e))
             if attempt < self.max_retries:
                 await asyncio.sleep(self.retry_base_sec * (2 ** (attempt - 1)))
         return last or OrderResult(
@@ -339,8 +433,8 @@ class ExecutionEngine:
         sl_req = OrderRequest(
             symbol=req.symbol,
             side=req.side,
-            qty=entry.filled_qty or req.qty,
-            order_type=req.order_type,
+            qty=int(entry.filled_qty or req.qty),
+            order_type=OrderType.STOP,
             stop_price=req.stop_price,
             take_profit=req.take_profit,
             strategy=req.strategy,
@@ -360,7 +454,20 @@ class ExecutionEngine:
             )
         if sl.status in (OrderStatus.FAILED, OrderStatus.REJECTED):
             audit("stop_loss_failed", symbol=req.symbol, reason=sl.message)
-            await self._broker.flatten_all()
+            if hasattr(self._broker, "flatten_symbol"):
+                await self._broker.flatten_symbol(req.symbol)
+            else:
+                await self._broker.flatten_all()
+            if cfg.trading_mode == "live":
+                return OrderResult(
+                    req.client_order_id,
+                    entry.broker_order_id,
+                    OrderStatus.REJECTED,
+                    0,
+                    0,
+                    0,
+                    f"Stop-loss failed — entry flattened: {sl.message}",
+                )
             return OrderResult(
                 req.client_order_id,
                 entry.broker_order_id,
@@ -375,21 +482,122 @@ class ExecutionEngine:
         audit("stop_loss_attached", symbol=req.symbol, stop_order=sl.broker_order_id)
         return entry
 
+    async def place_exit(
+        self,
+        *,
+        symbol: str,
+        qty: float,
+        reason: str,
+        market_price: float,
+        strategy: str = "exit",
+    ) -> OrderResult:
+        """Single entry point for all sell/exit orders."""
+        from services.execution.idempotency import make_order_id
+
+        cfg = get_settings()
+
+        if cfg.trading_mode == "shadow":
+            return OrderResult(
+                "", "", OrderStatus.REJECTED, 0, 0, 0, "Shadow mode — no exits on broker",
+            )
+
+        sell_qty = max(1, int(qty))
+        client_id = make_order_id(symbol, strategy, side="sell")
+        req = OrderRequest(
+            symbol=symbol.upper(),
+            side="short",
+            qty=sell_qty,
+            order_type=OrderType.MARKET,
+            strategy=strategy,
+            client_order_id=f"{client_id}-{reason}",
+            metadata={"exit_reason": reason},
+        )
+        blocked = await self._pre_execution_block(req)
+        if blocked:
+            return blocked
+
+        trade_log(
+            symbol=symbol,
+            strategy=strategy,
+            action="SELL",
+            result="submit",
+            reason=reason,
+            qty=sell_qty,
+        )
+
+        if cfg.trading_mode == "live":
+            result = await self._place_with_retry(req, market_price, cfg)
+            if result.broker_order_id:
+                result = await with_timeout(
+                    self._broker.reconcile_order(result.broker_order_id, req),
+                    seconds=cfg.external_api_timeout_sec,
+                    label="exit_reconcile",
+                )
+        else:
+            result = await self._place_with_retry(req, market_price, cfg)
+
+        from services.compliance.events import EventType
+        from services.compliance.recorder import crce
+
+        pos = next(
+            (p for p in (self._portfolio.state.positions if self._portfolio else []) if p.symbol.upper() == symbol.upper()),
+            None,
+        )
+        await crce.record(
+            event_type=EventType.ORDER_EXITED,
+            action="PLACE_EXIT",
+            symbol=symbol,
+            decision="EXECUTED" if result.status.value in ("filled", "partial") else "FAILED",
+            reason=reason,
+            portfolio=self._portfolio,
+            exit_price=result.avg_price or market_price,
+            exit_reason=reason,
+            expected_stop_loss=pos.stop_loss if pos else None,
+            qty=sell_qty,
+        )
+        return result
+
     async def activate_kill_switch(self) -> dict:
-        """Global emergency: halt, cancel, flatten, persist."""
+        """Global emergency: halt, cancel, flatten, persist with PnL accounting."""
         if self._portfolio:
             self._portfolio.emergency_shutdown()
             await self._portfolio.persist()
+        positions = list(self._portfolio.state.positions) if self._portfolio else []
         cancelled = await self.cancel_all()
         flattened = await self.flatten_all()
         if self._portfolio:
-            await self._portfolio.clear_after_flatten()
+            for pos in positions:
+                exit_price = await self._resolve_flatten_price(pos.symbol, pos.entry)
+                pnl = (exit_price - pos.entry) * pos.qty
+                await self._portfolio.record_exit(
+                    symbol=pos.symbol,
+                    exit_price=exit_price,
+                    exit_reason="kill_switch_flatten",
+                    pnl=pnl,
+                )
+            if self._portfolio.state.positions:
+                await self._portfolio.clear_after_flatten()
+            await self._portfolio.persist()
         audit("kill_switch_activated", cancelled=cancelled, flattened=flattened)
         return {
             "halted": True,
             "cancelled": cancelled,
             "flattened": flattened,
         }
+
+    async def _resolve_flatten_price(self, symbol: str, fallback: float) -> float:
+        if self._market_data is None:
+            return fallback
+        try:
+            if self._market_data.has_real_data_configured():
+                ltps = await self._market_data.fetch_ltps([symbol.upper()])
+                price = ltps.get(symbol.upper(), 0.0)
+                if price > 0:
+                    return price
+            df = self._market_data.synthetic_ohlcv(symbol, bars=3)
+            return float(df["close"].iloc[-1])
+        except Exception:
+            return fallback
 
     async def flatten_all(self) -> int:
         if self.cfg.trading_mode == "shadow":
