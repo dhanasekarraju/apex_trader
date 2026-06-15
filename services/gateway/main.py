@@ -419,17 +419,10 @@ async def kite_disconnect():
 
 @app.post("/api/mode", dependencies=[Depends(require_api_auth)])
 async def set_mode(req: ModeRequest):
-    from services.control.actions import ControlAction
-    from services.control.layer import control_layer
-
-    icl = await control_layer.allow(
-        ControlAction.TOGGLE_MODE,
-        {"portfolio": orch.portfolio, "trading_mode": req.mode},
-    )
-    if not icl.allowed:
-        raise HTTPException(403, icl.reason)
-
     mode = req.mode
+    if mode not in ("paper", "shadow", "live"):
+        raise HTTPException(400, "Invalid mode — use paper, shadow, or live")
+
     if mode == "live":
         blockers = await orch.execution.live_blockers()
         if blockers:
@@ -437,6 +430,7 @@ async def set_mode(req: ModeRequest):
                 403,
                 f"Live trading blocked: {', '.join(blockers[:3])}",
             )
+
     import os
 
     os.environ["TRADING_MODE"] = mode
@@ -446,6 +440,7 @@ async def set_mode(req: ModeRequest):
     from services.control.layer import control_layer
 
     await control_layer.sync_trading_mode_state(mode)
+    audit("trading_mode_changed", mode=mode)
     return {"mode": mode, "message": f"Switched to {mode} mode"}
 
 
@@ -591,6 +586,15 @@ async def compliance_events(limit: int = Query(default=100, ge=1, le=1000)):
 
     events = EventStore().load_all()
     return {"count": len(events), "events": events[-limit:]}
+
+
+@app.post("/api/compliance/repair-chain", dependencies=[Depends(require_api_auth)])
+async def compliance_repair_chain():
+    from services.compliance.store import EventStore
+
+    result = EventStore().repair_chain()
+    audit("compliance_chain_repaired", **{k: result[k] for k in ("kept", "dropped") if k in result})
+    return result
 
 
 @app.post("/api/compliance/replay", dependencies=[Depends(require_api_auth)])

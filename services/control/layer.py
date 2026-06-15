@@ -68,7 +68,8 @@ class ControlLayer:
         await icb.admin_reset_emergency()
 
     async def sync_trading_mode_state(self, trading_mode: str) -> None:
-        if await icb.status().get("kill_switch_latched"):
+        status = await icb.status()
+        if status.get("kill_switch_latched"):
             return
         await icb.recover_safe_mode()
 

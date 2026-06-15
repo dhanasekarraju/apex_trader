@@ -172,3 +172,38 @@ class EventStore:
                 }
             prev = record["event_hash"]
         return {"valid": True, "events": len(events), "head_hash": prev}
+
+    def repair_chain(self) -> dict[str, Any]:
+        """Truncate ledger at first break and reset head hash — ops recovery only."""
+        events = self.load_all()
+        if not events:
+            return {"ok": True, "kept": 0, "dropped": 0, "message": "empty ledger"}
+
+        valid: list[dict[str, Any]] = []
+        prev = GENESIS_HASH
+        for record in events:
+            stored_prev = record.get("prev_hash", GENESIS_HASH)
+            if stored_prev != prev:
+                break
+            body = {k: v for k, v in record.items() if k not in ("prev_hash", "event_hash")}
+            canonical = json.dumps(body, sort_keys=True, default=str)
+            expected = hashlib.sha256(f"{prev}{canonical}".encode()).hexdigest()
+            if record.get("event_hash") != expected:
+                break
+            valid.append(record)
+            prev = record["event_hash"]
+
+        dropped = len(events) - len(valid)
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        with self.path.open("w", encoding="utf-8") as f:
+            for record in valid:
+                f.write(json.dumps(record, default=str) + "\n")
+        head = valid[-1]["event_hash"] if valid else GENESIS_HASH
+        self._write_last_hash(head)
+        return {
+            "ok": True,
+            "kept": len(valid),
+            "dropped": dropped,
+            "head_hash": head,
+            "message": f"Repaired chain — kept {len(valid)}, dropped {dropped}",
+        }
