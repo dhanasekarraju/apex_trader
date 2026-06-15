@@ -132,6 +132,7 @@ async function loadKiteStatus() {
   const disconnectBtn = document.getElementById('kiteDisconnectBtn');
   const hint = document.getElementById('kiteRedirectHint');
   if (!panel) return;
+  if (!connectBtn || !disconnectBtn) return;
   try {
     const s = await api('/api/kite/status');
     pill.textContent = s.connected ? 'Kite CONNECTED' : 'Kite OFFLINE';
@@ -522,7 +523,11 @@ function renderAutonomous(status) {
   const halted = document.getElementById('killSwitchLabel')?.textContent === 'ON';
   if (startBtn) {
     startBtn.style.display = running ? 'none' : 'inline-block';
-    startBtn.disabled = !!halted || blockers.length > 0;
+    startBtn.disabled = !!halted;
+    startBtn.title = blockers.length
+      ? 'Blocked: ' + blockers.join('; ')
+      : 'Start autonomous watchlist scan';
+    startBtn.classList.toggle('blocked', blockers.length > 0 && !halted);
   }
   if (stopBtn) stopBtn.style.display = running ? 'inline-block' : 'none';
 }
@@ -537,6 +542,22 @@ async function loadAutonomousPanel() {
 }
 
 async function startAutonomous() {
+  let blockers = [];
+  try {
+    const status = await api('/api/autonomous/status');
+    blockers = status.blockers || [];
+  } catch (e) {
+    alert('Could not load autonomous status: ' + (e.message || e));
+    return;
+  }
+  if (blockers.length) {
+    alert(
+      'Autonomous start is blocked in LIVE mode:\n\n'
+      + blockers.map((b, i) => `${i + 1}. ${b}`).join('\n')
+      + '\n\nFix: run the full chaos suite on the server, then retry.'
+    );
+    return;
+  }
   if (!confirm('Start autonomous engine?\n\nIt will scan the watchlist and route every signal through the full risk + execution pipeline.')) return;
   try {
     const r = await api('/api/autonomous/start', { method: 'POST' });

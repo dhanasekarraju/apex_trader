@@ -63,6 +63,11 @@ header {
   transition: opacity 0.2s;
 }
 .btn:hover { opacity: 0.9; }
+.btn.blocked {
+  opacity: 0.85;
+  background: linear-gradient(135deg, #78350f, #b45309);
+  cursor: help;
+}
 .btn.ghost { background: transparent; border: 1px solid var(--border); color: var(--text); }
 .btn.danger { background: linear-gradient(135deg, #b91c1c, #ef4444); }
 

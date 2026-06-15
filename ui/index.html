@@ -57,8 +57,8 @@
       </div>
       <div class="kite-actions">
         <span class="pill" id="kitePill">Kite —</span>
-        <a class="btn" id="kiteConnectBtn" href="#">Connect Zerodha</a>
-        <button class="btn ghost" id="kiteDisconnectBtn" onclick="disconnectKite()" style="display:none">Disconnect</button>
+        <a class="btn" id="kiteConnectBtn" href="__KITE_LOGIN_URL__" style="display:__KITE_CONNECT_DISPLAY__">Connect Zerodha</a>
+        <button class="btn ghost" id="kiteDisconnectBtn" onclick="disconnectKite()" style="display:__KITE_DISCONNECT_DISPLAY__">Disconnect</button>
       </div>
     </div>
   </div>
@@ -178,6 +178,6 @@
   </footer>
 </div>
 <script>window.APEX_BASE = '__BASE_PATH__'; window.APEX_API_KEY = '__API_KEY__';</script>
-<script src="__BASE_PATH__/assets/app.js"></script>
+<script src="__BASE_PATH__/assets/app.js?v=3"></script>
 </body>
 </html>

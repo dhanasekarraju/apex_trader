@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Literal
 
 import asyncio
+import html as html_module
 import json
 
 from fastapi import Depends, FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect
@@ -184,8 +185,21 @@ async def index():
         raise HTTPException(404, "UI not found")
     base = _base_path()
     api_key = resolve_api_access_key()
+    login_url = "#"
+    kite_connected = False
+    try:
+        from services.brokers.kite_auth import kite_auth
+
+        status = await kite_auth.get_status()
+        login_url = str(status.get("login_url") or "#")
+        kite_connected = bool(status.get("connected"))
+    except Exception:
+        pass
     html = index_path.read_text(encoding="utf-8").replace("__BASE_PATH__", base)
     html = html.replace("__API_KEY__", api_key)
+    html = html.replace("__KITE_LOGIN_URL__", html_module.escape(login_url, quote=True))
+    html = html.replace("__KITE_CONNECT_DISPLAY__", "none" if kite_connected else "inline-block")
+    html = html.replace("__KITE_DISCONNECT_DISPLAY__", "inline-block" if kite_connected else "none")
     return HTMLResponse(html)
 
 
