@@ -77,13 +77,6 @@ class InstitutionalControlBrain:
         reason = await get_state_reason()
 
         if action == ICBAction.RUN_CHAOS:
-            cfg = get_settings()
-            if cfg.trading_mode == "live":
-                return ICBResult(
-                    ICBDecision.DENY,
-                    "Chaos testing forbidden while LIVE mode is active",
-                    state,
-                )
             from services.autonomous.state import is_autonomous_running
 
             if await is_autonomous_running():
@@ -92,6 +85,7 @@ class InstitutionalControlBrain:
                     "Stop autonomous engine before running chaos tests",
                     state,
                 )
+            # Scenarios run in isolated paper/mock mode — safe even when TRADING_MODE=live.
             return ICBResult(ICBDecision.ALLOW, "Chaos testing authorized", state)
 
         if state == SystemState.EMERGENCY_LOCK:

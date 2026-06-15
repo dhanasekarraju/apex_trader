@@ -99,3 +99,29 @@ async def test_risk_danger_blocks_via_icb(brain):
         },
     )
     assert not result.allowed
+
+
+@pytest.mark.asyncio
+async def test_chaos_allowed_in_live_when_autonomous_stopped(brain, monkeypatch):
+    monkeypatch.setenv("TRADING_MODE", "live")
+    get_settings.cache_clear()
+    with patch("services.autonomous.state.is_autonomous_running", new=AsyncMock(return_value=False)):
+        result = await brain.authorize(
+            ICBAction.RUN_CHAOS,
+            {"portfolio": PortfolioManager(), "trading_mode": "live"},
+        )
+    assert result.allowed
+    assert result.decision == ICBDecision.ALLOW
+
+
+@pytest.mark.asyncio
+async def test_chaos_blocked_when_autonomous_running(brain, monkeypatch):
+    monkeypatch.setenv("TRADING_MODE", "live")
+    get_settings.cache_clear()
+    with patch("services.autonomous.state.is_autonomous_running", new=AsyncMock(return_value=True)):
+        result = await brain.authorize(
+            ICBAction.RUN_CHAOS,
+            {"portfolio": PortfolioManager(), "trading_mode": "live"},
+        )
+    assert not result.allowed
+    assert "autonomous" in result.reason.lower()
