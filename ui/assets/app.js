@@ -119,6 +119,12 @@ function renderJournal(j) {
     </div>`;
 }
 
+function kiteConnectHref(status) {
+  if (status?.login_url) return status.login_url;
+  if (API_KEY) return `${API}/api/kite/login?api_key=${encodeURIComponent(API_KEY)}`;
+  return '#';
+}
+
 async function loadKiteStatus() {
   const panel = document.getElementById('kiteStatusPanel');
   const pill = document.getElementById('kitePill');
@@ -140,9 +146,7 @@ async function loadKiteStatus() {
     if (connectBtn) {
       connectBtn.style.display = s.connected ? 'none' : 'inline-block';
       connectBtn.removeAttribute('aria-disabled');
-      if (API_KEY) {
-        connectBtn.href = `${API}/api/kite/login?api_key=${encodeURIComponent(API_KEY)}`;
-      }
+      connectBtn.href = kiteConnectHref(s);
     }
     if (disconnectBtn) {
       disconnectBtn.style.display = s.connected ? 'inline-block' : 'none';
@@ -154,9 +158,7 @@ async function loadKiteStatus() {
     if (connectBtn) {
       connectBtn.style.display = 'inline-block';
       connectBtn.removeAttribute('aria-disabled');
-      if (API_KEY) {
-        connectBtn.href = `${API}/api/kite/login?api_key=${encodeURIComponent(API_KEY)}`;
-      }
+      connectBtn.href = '#';
     }
   }
 }
