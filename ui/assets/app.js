@@ -159,6 +159,37 @@ function handleKiteQueryParams() {
   window.history.replaceState({}, '', (window.APEX_BASE || '') + '/');
 }
 
+async function connectKite() {
+  const btn = document.getElementById('kiteConnectBtn');
+  const prev = btn?.textContent;
+  try {
+    if (!API_KEY) {
+      throw new Error('API key missing — hard-refresh the page (Ctrl+Shift+R) after updating SECRET_KEY');
+    }
+    if (btn) { btn.textContent = 'Redirecting…'; btn.disabled = true; }
+    const r = await fetch(API + '/api/kite/login', {
+      headers: authHeaders(),
+      redirect: 'manual',
+    });
+    if (r.status === 401) {
+      throw new Error('Invalid API key — hard-refresh the page after changing SECRET_KEY in .env');
+    }
+    if (r.status >= 300 && r.status < 400) {
+      const url = r.headers.get('Location');
+      if (!url) throw new Error('Kite login redirect missing');
+      window.location.href = url;
+      return;
+    }
+    const text = await r.text();
+    let payload;
+    try { payload = text ? JSON.parse(text) : {}; } catch { payload = {}; }
+    throw new Error(payload.error || text || 'Kite login failed');
+  } catch (e) {
+    if (btn) { btn.textContent = prev || 'Connect Zerodha'; btn.disabled = false; }
+    alert('Connect failed: ' + (e.message || e));
+  }
+}
+
 async function disconnectKite() {
   if (!confirm('Disconnect Zerodha Kite session on this server?')) return;
   await api('/api/kite/disconnect', { method: 'POST' });
