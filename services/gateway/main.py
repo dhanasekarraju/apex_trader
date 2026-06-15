@@ -357,9 +357,13 @@ async def kite_status():
     return await kite_auth.get_status()
 
 
-@app.get("/api/kite/login", dependencies=[Depends(require_api_auth)])
-async def kite_login():
+@app.get("/api/kite/login")
+async def kite_login(api_key: str | None = Query(default=None)):
+    """Browser OAuth start — accepts X-API-Key header or ?api_key= query (dashboard link)."""
     from services.brokers.kite_auth import kite_auth
+    from services.gateway.auth import verify_api_token
+
+    verify_api_token(api_key)
     try:
         return RedirectResponse(kite_auth.login_url())
     except ValueError as e:

@@ -106,7 +106,17 @@ header {
   display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 14px;
 }
 .kite-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
-.kite-actions .btn { text-decoration: none; display: inline-block; }
+.kite-actions .btn {
+  text-decoration: none;
+  display: inline-block;
+  cursor: pointer;
+  pointer-events: auto;
+}
+.kite-actions .btn[aria-disabled="true"] {
+  opacity: 0.45;
+  pointer-events: none;
+  cursor: not-allowed;
+}
 
 table { width: 100%; border-collapse: collapse; font-size: 12px; }
 th {

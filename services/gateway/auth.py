@@ -26,11 +26,14 @@ def resolve_api_access_key(cfg: Settings | None = None) -> str:
 def _extract_token(
     x_api_key: str | None,
     credentials: HTTPAuthorizationCredentials | None,
+    query_api_key: str | None = None,
 ) -> str | None:
     if x_api_key:
         return x_api_key.strip()
     if credentials and credentials.scheme.lower() == "bearer":
         return credentials.credentials.strip()
+    if query_api_key:
+        return query_api_key.strip()
     return None
 
 

@@ -83,6 +83,22 @@ def test_autonomous_status_requires_auth(api_client):
     assert r.status_code == 401
 
 
+def test_kite_login_accepts_query_api_key(api_client, api_headers, monkeypatch):
+    with patch("services.brokers.kite_auth.kite_auth.login_url", return_value="https://kite.zerodha.com/connect/login?v=3"):
+        r = api_client.get(
+            "/api/kite/login",
+            params={"api_key": api_headers["X-API-Key"]},
+            follow_redirects=False,
+        )
+    assert r.status_code in (302, 307)
+    assert "kite.zerodha.com" in r.headers.get("location", "")
+
+
+def test_kite_login_rejects_missing_key(api_client):
+    r = api_client.get("/api/kite/login", follow_redirects=False)
+    assert r.status_code == 401
+
+
 def test_autonomous_routes_with_auth(api_client, api_headers, monkeypatch):
     from services.gateway import main as gateway_main
 

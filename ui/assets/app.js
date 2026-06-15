@@ -137,12 +137,27 @@ async function loadKiteStatus() {
       hint.style.display = 'block';
       hint.textContent = `Register this redirect URL on developers.kite.trade: ${s.redirect_url}`;
     }
-    connectBtn.style.display = s.connected ? 'none' : 'inline-block';
-    disconnectBtn.style.display = s.connected ? 'inline-block' : 'none';
+    if (connectBtn) {
+      connectBtn.style.display = s.connected ? 'none' : 'inline-block';
+      connectBtn.removeAttribute('aria-disabled');
+      if (API_KEY) {
+        connectBtn.href = `${API}/api/kite/login?api_key=${encodeURIComponent(API_KEY)}`;
+      }
+    }
+    if (disconnectBtn) {
+      disconnectBtn.style.display = s.connected ? 'inline-block' : 'none';
+    }
   } catch (e) {
     panel.textContent = 'Unable to load Kite session status';
     pill.textContent = 'Kite —';
     pill.className = 'pill danger';
+    if (connectBtn) {
+      connectBtn.style.display = 'inline-block';
+      connectBtn.removeAttribute('aria-disabled');
+      if (API_KEY) {
+        connectBtn.href = `${API}/api/kite/login?api_key=${encodeURIComponent(API_KEY)}`;
+      }
+    }
   }
 }
 
@@ -157,37 +172,6 @@ function handleKiteQueryParams() {
     alert('Kite login failed: ' + decodeURIComponent(reason));
   }
   window.history.replaceState({}, '', (window.APEX_BASE || '') + '/');
-}
-
-async function connectKite() {
-  const btn = document.getElementById('kiteConnectBtn');
-  const prev = btn?.textContent;
-  try {
-    if (!API_KEY) {
-      throw new Error('API key missing — hard-refresh the page (Ctrl+Shift+R) after updating SECRET_KEY');
-    }
-    if (btn) { btn.textContent = 'Redirecting…'; btn.disabled = true; }
-    const r = await fetch(API + '/api/kite/login', {
-      headers: authHeaders(),
-      redirect: 'manual',
-    });
-    if (r.status === 401) {
-      throw new Error('Invalid API key — hard-refresh the page after changing SECRET_KEY in .env');
-    }
-    if (r.status >= 300 && r.status < 400) {
-      const url = r.headers.get('Location');
-      if (!url) throw new Error('Kite login redirect missing');
-      window.location.href = url;
-      return;
-    }
-    const text = await r.text();
-    let payload;
-    try { payload = text ? JSON.parse(text) : {}; } catch { payload = {}; }
-    throw new Error(payload.error || text || 'Kite login failed');
-  } catch (e) {
-    if (btn) { btn.textContent = prev || 'Connect Zerodha'; btn.disabled = false; }
-    alert('Connect failed: ' + (e.message || e));
-  }
 }
 
 async function disconnectKite() {
