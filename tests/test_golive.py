@@ -36,3 +36,26 @@ def test_passes_with_strong_metrics():
     )
     assert report.overall_passed
     assert all(c.passed for c in report.categories)
+
+
+def test_operator_override_skips_backtest_shadow_blockers(monkeypatch):
+    monkeypatch.setenv("GOLIVE_APPROVED", "true")
+    from shared.config import get_settings
+
+    get_settings.cache_clear()
+    gate = GoLiveGate()
+    report = gate.evaluate(
+        backtest={
+            "sharpe": 3.8, "win_rate": 54, "profit_factor": 0.44,
+            "max_drawdown": 5, "passed_validation": False,
+        },
+        shadow={"simulated_fills": 0, "win_rate": 0},
+        risk_healthy=True,
+        data_quality=0.95,
+        watchdog_ok=True,
+        strategy_scores={"momentum": 55},
+    )
+    assert report.overall_passed
+    assert "Backtest" not in " ".join(report.blockers)
+    assert "shadow" not in " ".join(report.blockers).lower()
+    assert all(c.passed for c in report.categories)

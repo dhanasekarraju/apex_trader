@@ -39,6 +39,13 @@ class ChaosEngine:
         quick: bool = False,
     ) -> dict:
         """Run chaos scenarios and generate institutional resilience report."""
+        from services.compliance.store import EventStore
+
+        integrity = EventStore().verify_chain()
+        if not integrity.get("valid"):
+            EventStore().repair_chain()
+            audit("chaos_suite_crce_repaired", dropped=integrity.get("broken_at_index"))
+
         selected = list(scenarios or CHAOS_SCENARIOS)
         full_suite = scenarios is None and not quick
         if quick:

@@ -745,3 +745,33 @@ async def chaos_gate_status():
 
     return ChaosLiveGate.status()
 
+
+@app.get("/api/live/checklist", dependencies=[Depends(require_api_auth)])
+async def live_checklist():
+    """Hard prerequisites for complete LIVE mode."""
+    from services.brokers.kite_auth import kite_auth
+    from services.live.checklist import live_capital_blockers
+
+    cfg = get_settings()
+    hard = live_capital_blockers(require_full_suite=True)
+    exec_blockers = await orch.execution.live_blockers()
+    kite = await kite_auth.get_status()
+    autonomous = await orch.autonomous.status()
+    return {
+        "trading_mode": cfg.trading_mode,
+        "live_ready": len(exec_blockers) == 0,
+        "hard_blockers": exec_blockers,
+        "crce_and_chaos": hard,
+        "kite_connected": kite.get("connected", False),
+        "autonomous_running": autonomous.get("running", False),
+        "autonomous_blockers": autonomous.get("blockers", []),
+        "steps": [
+            "1. docker compose build api && docker compose up -d",
+            "2. Connect Kite (dashboard Connect Zerodha)",
+            "3. POST /api/compliance/repair-chain if CRCE invalid",
+            "4. POST /api/chaos/run?quick=false (paper mode OK)",
+            "5. TRADING_MODE=live in .env + restart",
+            "6. POST /api/autonomous/start",
+        ],
+    }
+

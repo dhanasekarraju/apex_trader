@@ -215,11 +215,9 @@ class AutonomousEngine:
                 blockers.append("AUTONOMOUS_ALLOW_LIVE is false")
             if not cfg.golive_approved:
                 blockers.append("GOLIVE_APPROVED is false")
-            from services.chaos.live_gate import ChaosLiveGate
+            from services.live.checklist import live_capital_blockers
 
-            chaos_ok, chaos_blockers = ChaosLiveGate.check_for_live(require_full_suite=True)
-            if not chaos_ok:
-                blockers.extend(chaos_blockers)
+            blockers.extend(live_capital_blockers(require_full_suite=True))
         if self.orch.portfolio.is_trading_halted():
             blockers.append("Kill switch active")
         return blockers

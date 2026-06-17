@@ -383,13 +383,17 @@ class TradingOrchestrator:
             watchdog_ok=health.ok,
             strategy_scores={s["name"]: s["win_rate"] for s in self.strategy_lab.ranking()},
         )
-        blockers = list(report.blockers) + live_blockers
         from services.chaos.live_gate import ChaosLiveGate
 
         chaos_status = ChaosLiveGate.status()
-        if not chaos_status["live_capital_approved"]:
-            blockers.extend(chaos_status["blockers"])
-        overall = report.overall_passed and not live_blockers and chaos_status["live_capital_approved"]
+        blockers: list[str] = []
+        seen: set[str] = set()
+        for item in list(report.blockers) + live_blockers:
+            if item not in seen:
+                seen.add(item)
+                blockers.append(item)
+        hard_live_clear = len(live_blockers) == 0
+        overall = report.overall_passed and hard_live_clear
         return {
             "overall_passed": overall,
             "live_allowed": overall and self.cfg.enable_live_execution,

@@ -56,10 +56,8 @@ class LiveSafetyGate:
                 "and set KITE_STATIC_IP_CONFIRMED=true"
             )
 
-        from services.chaos.live_gate import ChaosLiveGate
+        from services.live.checklist import live_capital_blockers
 
-        chaos_ok, chaos_blockers = ChaosLiveGate.check_for_live(require_full_suite=True)
-        if not chaos_ok:
-            blockers.extend(chaos_blockers)
+        blockers.extend(live_capital_blockers(require_full_suite=True))
 
         return len(blockers) == 0, blockers

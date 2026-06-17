@@ -191,10 +191,12 @@ def test_check_for_live_never_bypasses_dev_flag(monkeypatch):
 def test_chaos_live_gate_approves_institutional_report(tmp_path, monkeypatch):
     monkeypatch.setenv("CHAOS_GATE_ENFORCE", "true")
     get_settings.cache_clear()
+    from datetime import datetime, timezone
+
     from services.chaos.live_gate import ChaosLiveGate
 
     report = {
-        "generated_at": "2026-06-09T12:00:00+00:00",
+        "generated_at": datetime.now(timezone.utc).isoformat(),
         "full_suite": True,
         "scenario_count": 25,
         "resilience_score": 95,

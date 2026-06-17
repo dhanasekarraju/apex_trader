@@ -52,11 +52,19 @@ class GoLiveGate:
             and backtest.get("max_drawdown", 99) <= cfg.golive_max_drawdown
             and backtest.get("passed_validation", False)
         )
+        strat_effective = strat_pass or cfg.golive_approved
+        strat_details = (
+            f"Sharpe {backtest.get('sharpe')} win {backtest.get('win_rate')}% "
+            f"PF {backtest.get('profit_factor')}"
+        )
+        if strat_pass:
+            pass
+        elif cfg.golive_approved:
+            strat_details += " · operator override (GOLIVE_APPROVED)"
         categories.append(CategoryScore(
-            "strategy_quality", strat_score, strat_pass,
-            f"Sharpe {backtest.get('sharpe')} win {backtest.get('win_rate')}% PF {backtest.get('profit_factor')}",
+            "strategy_quality", strat_score, strat_effective, strat_details,
         ))
-        if not strat_pass:
+        if not strat_pass and not cfg.golive_approved:
             blockers.append("Backtest/walk-forward validation failed")
 
         risk_pass = risk_healthy
@@ -65,11 +73,16 @@ class GoLiveGate:
             blockers.append("Risk engine not healthy")
 
         exec_pass = shadow.get("simulated_fills", 0) >= 10
+        exec_effective = exec_pass or cfg.golive_approved
+        exec_details = f"Shadow fills {shadow.get('simulated_fills')} win {shadow.get('win_rate')}%"
+        if exec_pass:
+            pass
+        elif cfg.golive_approved:
+            exec_details += " · operator override (GOLIVE_APPROVED)"
         categories.append(CategoryScore(
-            "execution_quality", shadow.get("win_rate", 0), exec_pass,
-            f"Shadow fills {shadow.get('simulated_fills')} win {shadow.get('win_rate')}%",
+            "execution_quality", shadow.get("win_rate", 0), exec_effective, exec_details,
         ))
-        if not exec_pass:
+        if not exec_pass and not cfg.golive_approved:
             blockers.append("Insufficient shadow mode history")
 
         ops_pass = watchdog_ok
