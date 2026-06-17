@@ -77,6 +77,11 @@ class ScenarioRunner:
                 self.orch.cfg = get_settings()
                 self.orch.execution.refresh_broker()
 
+                if scenario.fault_config.get("api_timeout_burst"):
+                    threshold = get_settings().api_failure_threshold
+                    for _ in range(threshold):
+                        self.orch.execution._circuit.record_failure("Chaos: API timeout burst")
+
                 portfolio_before = len(self.orch.portfolio.state.positions)
                 icb_result = await icb.authorize(
                     ICBAction.ANALYZE_SYMBOL,
