@@ -77,6 +77,9 @@ class AutonomousEngine:
         running = await is_autonomous_running()
         symbols = self.watchlist.resolve()
         blockers = self._start_blockers() if not running else []
+        last_cycle = self._last_cycle_at.isoformat() if self._last_cycle_at else None
+        if cached and cached.get("last_cycle_at"):
+            last_cycle = cached["last_cycle_at"]
         base = {
             "running": running,
             "mode": self.cfg.trading_mode,
@@ -85,7 +88,10 @@ class AutonomousEngine:
             "scan_interval_sec": self.cfg.autonomous_scan_interval_sec,
             "session": f"{self.cfg.autonomous_session_start}–{self.cfg.autonomous_session_end} IST",
             "blockers": blockers,
-            "last_cycle": self._last_cycle_at.isoformat() if self._last_cycle_at else None,
+            "last_cycle": last_cycle,
+            "skipped": cached.get("skipped") if cached else None,
+            "stats": cached.get("stats") if cached else None,
+            "updated_at": cached.get("updated_at") if cached else None,
         }
         if cached:
             base.update(cached)
@@ -97,7 +103,9 @@ class AutonomousEngine:
         from services.icb.engine import icb
 
         if not await is_autonomous_running():
-            return {"skipped": "not_running"}
+            status = {"skipped": "not_running", "running": False}
+            await set_autonomous_status(status)
+            return status
 
         risk = self.orch.risk_dashboard.compute()
         icb_result = await icb.authorize(

@@ -56,8 +56,10 @@ async def test_start_returns_blockers_when_halted(engine):
 @pytest.mark.asyncio
 async def test_tick_skipped_when_not_running(engine):
     with patch("services.autonomous.engine.is_autonomous_running", new=AsyncMock(return_value=False)):
-        result = await engine.tick()
+        with patch("services.autonomous.engine.set_autonomous_status", new=AsyncMock()) as mock_status:
+            result = await engine.tick()
     assert result.get("skipped") == "not_running"
+    mock_status.assert_awaited_once()
 
 
 @pytest.mark.asyncio

@@ -69,27 +69,56 @@ async def _autonomous_loop() -> None:
     cfg = get_settings()
     while True:
         try:
-            await orch.autonomous.tick()
+            result = await orch.autonomous.tick()
+            if result.get("skipped"):
+                audit("autonomous_tick_skipped", reason=result.get("skipped"))
+            elif result.get("stats"):
+                audit("autonomous_tick_done", **result.get("stats", {}))
         except Exception as e:
             audit("autonomous_tick_failed", error=str(e))
         await asyncio.sleep(cfg.autonomous_scan_interval_sec)
+
+
+def _task_alive(task: asyncio.Task | None) -> bool:
+    return task is not None and not task.done()
+
+
+def ensure_background_loops() -> None:
+    """Start background loops if missing — survives partial startup failures."""
+    global _refresh_task, _lifecycle_task, _autonomous_task
+    if not _task_alive(_refresh_task):
+        _refresh_task = asyncio.create_task(_control_refresh_loop())
+        audit("background_loop_started", loop="control_refresh")
+    if not _task_alive(_lifecycle_task):
+        _lifecycle_task = asyncio.create_task(_lifecycle_loop())
+        audit("background_loop_started", loop="lifecycle")
+    if not _task_alive(_autonomous_task):
+        _autonomous_task = asyncio.create_task(_autonomous_loop())
+        audit("background_loop_started", loop="autonomous")
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global _refresh_task, _lifecycle_task, _autonomous_task
     setup_logging()
+    startup_errors: list[str] = []
     try:
         await init_db()
+    except Exception as e:
+        startup_errors.append(f"init_db: {e}")
+    try:
         from services.compliance.recorder import crce
 
         await crce.recover()
-        await orch.startup()
-        _refresh_task = asyncio.create_task(_control_refresh_loop())
-        _lifecycle_task = asyncio.create_task(_lifecycle_loop())
-        _autonomous_task = asyncio.create_task(_autonomous_loop())
     except Exception as e:
-        audit("startup_failed", error=str(e))
+        startup_errors.append(f"crce_recover: {e}")
+    try:
+        await orch.startup()
+    except Exception as e:
+        startup_errors.append(f"orchestrator_startup: {e}")
+    ensure_background_loops()
+    if startup_errors:
+        audit("startup_degraded", errors=startup_errors)
     yield
     for task in (_refresh_task, _lifecycle_task, _autonomous_task):
         if task:
@@ -519,6 +548,7 @@ async def autonomous_status():
 
 @app.post("/api/autonomous/start", dependencies=[Depends(require_api_auth)])
 async def autonomous_start():
+    ensure_background_loops()
     result = await orch.autonomous.start()
     if not result.get("ok"):
         blockers = result.get("blockers") or ["unknown blocker"]
@@ -529,6 +559,13 @@ async def autonomous_start():
 @app.post("/api/autonomous/stop", dependencies=[Depends(require_api_auth)])
 async def autonomous_stop():
     return await orch.autonomous.stop()
+
+
+@app.post("/api/autonomous/tick", dependencies=[Depends(require_api_auth)])
+async def autonomous_tick_now():
+    """Run one autonomous scan cycle immediately (also used to verify the loop)."""
+    ensure_background_loops()
+    return await orch.autonomous.tick()
 
 
 @app.get("/api/control/status")

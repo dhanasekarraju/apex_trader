@@ -102,6 +102,10 @@ class MarketDataService:
             return None
         df = pd.DataFrame(candles)
         df["date"] = pd.to_datetime(df["date"])
+        if df["date"].dt.tz is None:
+            from zoneinfo import ZoneInfo
+
+            df["date"] = df["date"].dt.tz_localize(ZoneInfo("Asia/Kolkata"))
         df = df.set_index("date").rename(columns={"open": "open", "high": "high", "low": "low", "close": "close", "volume": "volume"})
         df = df[["open", "high", "low", "close", "volume"]].astype(float)
         return df.tail(bars)

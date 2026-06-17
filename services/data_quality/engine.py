@@ -41,13 +41,23 @@ class DataQualityEngine:
             issues.append(f"{dupes} duplicate timestamps")
 
         stale = 0.0
+        bar_seconds = 900.0
+        if len(df) > 2 and hasattr(df.index, "to_series"):
+            diffs = df.index.to_series().diff().dropna()
+            median_gap = diffs.median()
+            if len(diffs) and median_gap is not pd.NaT and median_gap > pd.Timedelta(0):
+                bar_seconds = max(float(median_gap.total_seconds()), 60.0)
+
         if hasattr(df.index, "max"):
             try:
                 last_ts = pd.Timestamp(df.index.max())
                 if last_ts.tzinfo is None:
-                    last_ts = last_ts.tz_localize("UTC")
+                    from zoneinfo import ZoneInfo
+
+                    last_ts = last_ts.tz_localize(ZoneInfo("Asia/Kolkata"))
                 stale = (datetime.now(timezone.utc) - last_ts.tz_convert("UTC")).total_seconds()
-                if stale > self.max_stale_sec:
+                stale_limit = max(float(self.max_stale_sec), bar_seconds * 1.5)
+                if stale > stale_limit:
                     score -= 0.4
                     issues.append(f"Stale feed {stale:.0f}s")
             except Exception:
@@ -58,7 +68,9 @@ class DataQualityEngine:
             diffs = df.index.to_series().diff().dropna()
             median_gap = diffs.median()
             if len(diffs) and median_gap is not pd.NaT and median_gap > pd.Timedelta(0):
-                gaps = int((diffs > median_gap * 3).sum())
+                # Overnight/weekend session breaks are expected on daily bar series.
+                intraday = (diffs > median_gap * 3) & (diffs < pd.Timedelta(hours=12))
+                gaps = int(intraday.sum())
                 if gaps:
                     score -= min(0.15, gaps / len(df))
                     issues.append(f"{gaps} abnormal time gaps")
