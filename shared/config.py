@@ -125,6 +125,11 @@ class Settings(BaseSettings):
     autonomous_inter_symbol_delay_sec: float = 1.5
     autonomous_session_start: str = "09:20"
     autonomous_session_end: str = "15:15"
+    # static = data/watchlist.yaml | dynamic = Kite trending pool daily
+    watchlist_mode: str = "dynamic"
+    autonomous_universe_pool_size: int = 50
+    autonomous_universe_min_price: float = 50.0
+    autonomous_universe_min_volume: int = 50_000
     watchlist_symbols: str = ""
     watchlist_file: str = "data/watchlist.yaml"
     enforce_sector_correlation_limits: bool = False

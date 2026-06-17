@@ -7,7 +7,6 @@ from pathlib import Path
 from typing import Literal
 
 import asyncio
-import html as html_module
 import json
 
 from fastapi import Depends, FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect
@@ -30,6 +29,8 @@ orch = TradingOrchestrator()
 _refresh_task: asyncio.Task | None = None
 _lifecycle_task: asyncio.Task | None = None
 _autonomous_task: asyncio.Task | None = None
+_chaos_run_task: asyncio.Task | None = None
+_chaos_run_status: dict = {"running": False, "error": "", "finished_at": None}
 
 
 async def _control_refresh_loop() -> None:
@@ -214,21 +215,15 @@ async def index():
         raise HTTPException(404, "UI not found")
     base = _base_path()
     api_key = resolve_api_access_key()
-    login_url = "#"
-    kite_connected = False
-    try:
-        from services.brokers.kite_auth import kite_auth
-
-        status = await kite_auth.get_status()
-        login_url = str(status.get("login_url") or "#")
-        kite_connected = bool(status.get("connected"))
-    except Exception:
-        pass
-    html = index_path.read_text(encoding="utf-8").replace("__BASE_PATH__", base)
-    html = html.replace("__API_KEY__", api_key)
-    html = html.replace("__KITE_LOGIN_URL__", html_module.escape(login_url, quote=True))
-    html = html.replace("__KITE_CONNECT_DISPLAY__", "none" if kite_connected else "inline-block")
-    html = html.replace("__KITE_DISCONNECT_DISPLAY__", "inline-block" if kite_connected else "none")
+    html = index_path.read_text(encoding="utf-8")
+    html = html.replace(
+        "window.APEX_BASE = '';",
+        f"window.APEX_BASE = {json.dumps(base)};",
+    )
+    html = html.replace(
+        "window.APEX_API_KEY = '';",
+        f"window.APEX_API_KEY = {json.dumps(api_key)};",
+    )
     return HTMLResponse(html)
 
 
@@ -541,6 +536,17 @@ async def execution_dlq():
     }
 
 
+@app.post("/api/autonomous/universe/refresh", dependencies=[Depends(require_api_auth)])
+async def autonomous_universe_refresh():
+    """Rebuild today's trending pool (50) and scan list (15) from Kite."""
+    from services.autonomous.dynamic_universe import DynamicUniverseSelector
+
+    selector = DynamicUniverseSelector(market_data=orch.data)
+    snap = await selector.refresh()
+    orch.autonomous.watchlist._last_universe = snap.to_dict()
+    return snap.to_dict()
+
+
 @app.get("/api/autonomous/status", dependencies=[Depends(require_api_auth)])
 async def autonomous_status():
     return await orch.autonomous.status()
@@ -721,8 +727,33 @@ async def chaos_scenarios():
     ]
 
 
+async def _run_chaos_background(*, quick: bool) -> None:
+    global _chaos_run_status
+    _chaos_run_status = {"running": True, "error": "", "finished_at": None}
+    try:
+        from services.chaos.chaos_engine import chaos_engine
+
+        report = await chaos_engine.run_suite(quick=quick)
+        _chaos_run_status = {
+            "running": False,
+            "error": "",
+            "finished_at": report.get("generated_at"),
+            "resilience_score": report.get("resilience_score"),
+            "stability_classification": report.get("stability_classification"),
+            "safe_for_live_capital": report.get("safe_for_live_capital"),
+            "scenario_count": report.get("scenario_count"),
+        }
+        audit("chaos_background_complete", score=report.get("resilience_score"))
+    except Exception as exc:
+        _chaos_run_status = {"running": False, "error": str(exc), "finished_at": None}
+        audit("chaos_background_failed", error=str(exc))
+
+
 @app.post("/api/chaos/run", dependencies=[Depends(require_api_auth)])
-async def chaos_run(quick: bool = Query(default=True)):
+async def chaos_run(
+    quick: bool = Query(default=False),
+    background: bool = Query(default=False),
+):
     from services.chaos.chaos_engine import chaos_engine
     from services.icb.actions import ICBAction
     from services.icb.engine import icb
@@ -734,7 +765,38 @@ async def chaos_run(quick: bool = Query(default=True)):
     if not icb_result.allowed:
         raise HTTPException(403, icb_result.reason)
 
+    if background:
+        global _chaos_run_task
+        if _chaos_run_task is not None and not _chaos_run_task.done():
+            return {
+                "started": False,
+                "running": True,
+                "message": "Chaos suite already running — poll /api/chaos/run/status",
+            }
+        _chaos_run_task = asyncio.create_task(_run_chaos_background(quick=quick))
+        return {
+            "started": True,
+            "running": True,
+            "quick": quick,
+            "message": "Chaos suite started in background (typically 5–15 min for full suite)",
+        }
+
     return await chaos_engine.run_suite(quick=quick)
+
+
+@app.get("/api/chaos/run/status", dependencies=[Depends(require_api_auth)])
+async def chaos_run_status():
+    from services.chaos.live_gate import ChaosLiveGate
+
+    gate = ChaosLiveGate.status()
+    running = bool(_chaos_run_status.get("running")) or (
+        _chaos_run_task is not None and not _chaos_run_task.done()
+    )
+    return {
+        "running": running,
+        "job": _chaos_run_status,
+        "gate": gate,
+    }
 
 
 @app.post("/api/chaos/run/{scenario_id}", dependencies=[Depends(require_api_auth)])
@@ -781,6 +843,25 @@ async def chaos_gate_status():
     from services.chaos.live_gate import ChaosLiveGate
 
     return ChaosLiveGate.status()
+
+
+@app.post("/api/live/repair-crce", dependencies=[Depends(require_api_auth)])
+async def live_repair_crce():
+    """Repair CRCE hash chain and return updated live blockers."""
+    from services.compliance.store import EventStore
+    from services.live.checklist import crce_blockers, live_capital_blockers
+
+    result = EventStore().repair_chain()
+    audit("live_crce_repaired", **{k: result[k] for k in ("kept", "dropped") if k in result})
+    integrity = EventStore().verify_chain()
+    blockers = live_capital_blockers(require_full_suite=True)
+    return {
+        "repair": result,
+        "integrity": integrity,
+        "crce_ok": integrity.get("valid", False),
+        "blockers": blockers,
+        "crce_blockers": crce_blockers(),
+    }
 
 
 @app.get("/api/live/checklist", dependencies=[Depends(require_api_auth)])

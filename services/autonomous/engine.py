@@ -75,7 +75,15 @@ class AutonomousEngine:
     async def status(self) -> dict:
         cached = await get_autonomous_status()
         running = await is_autonomous_running()
+        if self.cfg.watchlist_mode == "dynamic" and not self.watchlist.last_universe_meta():
+            try:
+                await self.watchlist.resolve_scan_symbols(self.orch.data)
+            except Exception:
+                pass
         symbols = self.watchlist.resolve()
+        universe = self.watchlist.last_universe_meta() or {}
+        if self.cfg.watchlist_mode == "dynamic" and universe:
+            symbols = universe.get("pool") or symbols
         blockers = self._start_blockers() if not running else []
         last_cycle = self._last_cycle_at.isoformat() if self._last_cycle_at else None
         if cached and cached.get("last_cycle_at"):
@@ -83,8 +91,14 @@ class AutonomousEngine:
         base = {
             "running": running,
             "mode": self.cfg.trading_mode,
+            "watchlist_mode": self.cfg.watchlist_mode,
             "watchlist_count": len(symbols),
-            "watchlist_preview": symbols[:10],
+            "watchlist_preview": (universe.get("scan") or symbols)[:10],
+            "universe_pool_size": universe.get("pool_size") or len(symbols),
+            "universe_scan_size": universe.get("scan_size") or self.cfg.autonomous_max_symbols_per_cycle,
+            "universe_source": universe.get("source"),
+            "universe_refreshed_at": universe.get("refreshed_at"),
+            "universe_trade_date": universe.get("trade_date"),
             "scan_interval_sec": self.cfg.autonomous_scan_interval_sec,
             "session": f"{self.cfg.autonomous_session_start}–{self.cfg.autonomous_session_end} IST",
             "blockers": blockers,
@@ -142,7 +156,9 @@ class AutonomousEngine:
             await set_autonomous_status(status)
             return status
 
-        symbols = self._prioritize_symbols(self.watchlist.resolve())
+        symbols = self._prioritize_symbols(
+            await self.watchlist.resolve_scan_symbols(self.orch.data)
+        )
         if not symbols:
             status = {"skipped": "empty_watchlist", "running": True}
             await set_autonomous_status(status)

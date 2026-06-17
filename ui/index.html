@@ -6,7 +6,7 @@
 <title>Apex Trader — Institutional Platform</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="__BASE_PATH__/assets/style.css">
+<link rel="stylesheet" href="assets/style.css">
 </head>
 <body>
 <div class="app">
@@ -57,8 +57,8 @@
       </div>
       <div class="kite-actions">
         <span class="pill" id="kitePill">Kite —</span>
-        <a class="btn" id="kiteConnectBtn" href="__KITE_LOGIN_URL__" style="display:__KITE_CONNECT_DISPLAY__">Connect Zerodha</a>
-        <button class="btn ghost" id="kiteDisconnectBtn" onclick="disconnectKite()" style="display:__KITE_DISCONNECT_DISPLAY__">Disconnect</button>
+        <a class="btn" id="kiteConnectBtn" href="#" style="display:none">Connect Zerodha</a>
+        <button class="btn ghost" id="kiteDisconnectBtn" onclick="disconnectKite()" style="display:none">Disconnect</button>
       </div>
     </div>
   </div>
@@ -91,10 +91,15 @@
       <div class="autonomous-stats" id="autonomousStats">
         <div><span class="metric-sub">Session</span><span id="autoSession">—</span></div>
         <div><span class="metric-sub">Watchlist</span><span id="autoWatchlist">—</span></div>
+        <div class="metric-sub" id="autoWatchlistPreview" style="grid-column: 1 / -1; margin-top: 4px"></div>
         <div><span class="metric-sub">Last cycle</span><span id="autoLastCycle">—</span></div>
         <div><span class="metric-sub">Scanned / Buy</span><span id="autoCycleStats">—</span></div>
       </div>
       <div id="autoBlockers" class="metric-sub" style="margin:10px 0;display:none;color:var(--amber)"></div>
+      <div id="autoBlockerActions" class="input-row" style="margin:0 0 10px;display:none">
+        <button class="btn ghost" id="repairCrceBtn" onclick="repairCrce()">1. Repair CRCE</button>
+        <button class="btn ghost" id="runChaosBtn" onclick="runFullChaos()">2. Run full chaos</button>
+      </div>
       <div id="autoRecent" class="auto-recent"><div class="empty">Autonomous idle — start to scan watchlist</div></div>
       <div class="input-row" style="margin-top:12px;margin-bottom:0">
         <button class="btn" id="autoStartBtn" onclick="startAutonomous()">Start autonomous</button>
@@ -177,7 +182,7 @@
     Apex Trader v2.0 · Risk overrides AI · Shadow before live · Catastrophic losses are not acceptable
   </footer>
 </div>
-<script>window.APEX_BASE = '__BASE_PATH__'; window.APEX_API_KEY = '__API_KEY__';</script>
-<script src="__BASE_PATH__/assets/app.js?v=3"></script>
+<script>window.APEX_BASE = ''; window.APEX_API_KEY = '';</script>
+<script src="assets/app.js?v=5"></script>
 </body>
 </html>

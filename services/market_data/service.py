@@ -112,12 +112,68 @@ class MarketDataService:
 
     async def _resolve_instrument_token(self, kite, symbol: str) -> int | None:
         if self._instrument_cache is None:
-            loop = asyncio.get_event_loop()
-            instruments = await loop.run_in_executor(None, partial(kite.instruments, "NSE"))
-            self._instrument_cache = {
-                i["tradingsymbol"]: i["instrument_token"] for i in instruments
-            }
-        return self._instrument_cache.get(symbol.upper())
+            await self._load_instrument_cache(kite)
+        return self._instrument_cache.get(symbol.upper()) if self._instrument_cache else None
+
+    async def _load_instrument_cache(self, kite) -> None:
+        loop = asyncio.get_event_loop()
+        instruments = await loop.run_in_executor(None, partial(kite.instruments, "NSE"))
+        self._instrument_cache = {
+            i["tradingsymbol"]: i["instrument_token"] for i in instruments
+        }
+
+    async def list_nse_eq_symbols(self) -> list[str]:
+        """All NSE cash equities eligible for scanning (EQ series)."""
+        if not self.has_real_data_configured():
+            return []
+        try:
+            from kiteconnect import KiteConnect
+        except ImportError:
+            return []
+
+        kite = KiteConnect(api_key=self.cfg.kite_api_key)
+        kite.set_access_token(kite_auth.get_access_token_sync())
+        loop = asyncio.get_event_loop()
+        instruments = await loop.run_in_executor(None, partial(kite.instruments, "NSE"))
+        out: list[str] = []
+        for inst in instruments:
+            if inst.get("segment") != "NSE":
+                continue
+            if inst.get("instrument_type") != "EQ":
+                continue
+            sym = str(inst.get("tradingsymbol") or "").upper()
+            if not sym or "-" in sym:
+                continue
+            if sym.endswith("BEES") or sym.endswith("ETF"):
+                continue
+            out.append(sym)
+        return out
+
+    async def fetch_market_quotes(self, symbols: list[str]) -> dict[str, dict]:
+        """Batch Kite full quotes — volume, OHLC, last price."""
+        if not symbols:
+            return {}
+        if not self.has_real_data_configured():
+            return {}
+        try:
+            from kiteconnect import KiteConnect
+        except ImportError:
+            return {}
+
+        kite = KiteConnect(api_key=self.cfg.kite_api_key)
+        kite.set_access_token(kite_auth.get_access_token_sync())
+        loop = asyncio.get_event_loop()
+        chunk_size = 400
+        merged: dict[str, dict] = {}
+        for i in range(0, len(symbols), chunk_size):
+            chunk = symbols[i : i + chunk_size]
+            keys = [f"NSE:{s.upper()}" for s in chunk]
+            resp = await loop.run_in_executor(None, partial(kite.quote, keys))
+            for sym in chunk:
+                key = f"NSE:{sym.upper()}"
+                if key in resp:
+                    merged[sym.upper()] = resp[key]
+        return merged
 
     def volume_profile(self, df: pd.DataFrame, bins: int = 20) -> dict:
         if df.empty:

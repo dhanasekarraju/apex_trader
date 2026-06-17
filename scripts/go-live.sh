@@ -36,20 +36,24 @@ docker compose restart api
 sleep 10
 
 echo ""
-echo "4) Full chaos suite (5–15 min)..."
-curl -sf -X POST "${auth[@]}" "$BASE_URL/api/chaos/run?quick=false" | python3 -m json.tool
+echo "4) Full chaos suite (5–15 min, background)..."
+curl -sf -X POST "${auth[@]}" "$BASE_URL/api/chaos/run?quick=false&background=true" | python3 -m json.tool
 
 echo ""
 echo "5) Waiting for chaos gate..."
-for i in $(seq 1 30); do
-  gate=$(curl -sf "${auth[@]}" "$BASE_URL/api/chaos/gate")
-  approved=$(echo "$gate" | python3 -c "import sys,json; print(json.load(sys.stdin).get('data',{}).get('live_capital_approved', False))" 2>/dev/null || echo false)
-  class=$(echo "$gate" | python3 -c "import sys,json; print(json.load(sys.stdin).get('data',{}).get('stability_classification',''))" 2>/dev/null || echo "")
-  echo "   attempt $i: approved=$approved class=$class"
-  if [ "$approved" = "True" ] || [ "$approved" = "true" ]; then
-    break
+for i in $(seq 1 60); do
+  st=$(curl -sf "${auth[@]}" "$BASE_URL/api/chaos/run/status")
+  running=$(echo "$st" | python3 -c "import sys,json; print(json.load(sys.stdin).get('data',{}).get('running', True))" 2>/dev/null || echo true)
+  gate=$(echo "$st" | python3 -c "import sys,json; print(json.dumps(json.load(sys.stdin).get('data',{}).get('gate',{})))" 2>/dev/null || echo "{}")
+  approved=$(echo "$gate" | python3 -c "import sys,json; print(json.load(sys.stdin).get('live_capital_approved', False))" 2>/dev/null || echo false)
+  class=$(echo "$gate" | python3 -c "import sys,json; print(json.load(sys.stdin).get('stability_classification',''))" 2>/dev/null || echo "")
+  echo "   attempt $i: running=$running approved=$approved class=$class"
+  if [ "$running" = "False" ] || [ "$running" = "false" ]; then
+    if [ "$approved" = "True" ] || [ "$approved" = "true" ]; then
+      break
+    fi
   fi
-  sleep 30
+  sleep 15
 done
 
 echo ""

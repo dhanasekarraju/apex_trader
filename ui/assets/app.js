@@ -477,7 +477,7 @@ async function resumeTrading() {
   loadAutonomousPanel();
 }
 
-function renderAutonomous(status) {
+function renderAutonomous(status, liveBlockers) {
   if (!status) return;
   const running = !!status.running;
   const pill = document.getElementById('autonomousPill');
@@ -487,15 +487,25 @@ function renderAutonomous(status) {
   }
   document.getElementById('autoSession').textContent = status.session || '—';
   document.getElementById('autoWatchlist').textContent =
-    (status.watchlist_count ?? 0) + ' symbols' + (status.watchlist_preview?.length ? ' · ' + status.watchlist_preview.slice(0, 4).join(', ') : '');
+    status.watchlist_mode === 'dynamic'
+      ? `${status.universe_scan_size || 15} today · pool ${status.universe_pool_size || 50} trending`
+      : (status.watchlist_count ?? 0) + ' symbols';
+  const preview = status.watchlist_preview?.length
+    ? status.watchlist_preview.slice(0, 5).join(', ')
+    : '';
+  const previewEl = document.getElementById('autoWatchlistPreview');
+  if (previewEl) previewEl.textContent = preview ? `Today: ${preview}` : '';
   document.getElementById('autoLastCycle').textContent =
     status.last_cycle_at ? (status.last_cycle_at.slice(11, 19) || status.last_cycle) : (status.last_cycle || '—');
   const stats = status.stats || {};
   document.getElementById('autoCycleStats').textContent =
     stats.scanned != null ? `${stats.scanned} / ${stats.buy ?? 0} buy` : '—';
 
+  const blockers = [...new Set([...(status.blockers || []), ...(liveBlockers || [])])];
   const blockersEl = document.getElementById('autoBlockers');
-  const blockers = status.blockers || [];
+  const actionsEl = document.getElementById('autoBlockerActions');
+  const needsCrce = blockers.some(b => /CRCE|repair-chain/i.test(b));
+  const needsChaos = blockers.some(b => /chaos|resilience|INSTITUTIONAL|scenario/i.test(b));
   if (blockersEl) {
     if (blockers.length && !running) {
       blockersEl.style.display = 'block';
@@ -504,6 +514,13 @@ function renderAutonomous(status) {
       blockersEl.style.display = 'none';
       blockersEl.textContent = '';
     }
+  }
+  if (actionsEl) {
+    actionsEl.style.display = blockers.length && !running ? 'flex' : 'none';
+    const crceBtn = document.getElementById('repairCrceBtn');
+    const chaosBtn = document.getElementById('runChaosBtn');
+    if (crceBtn) crceBtn.style.display = needsCrce ? 'inline-block' : 'none';
+    if (chaosBtn) chaosBtn.style.display = needsChaos ? 'inline-block' : 'none';
   }
 
   const recentEl = document.getElementById('autoRecent');
@@ -534,11 +551,84 @@ function renderAutonomous(status) {
 
 async function loadAutonomousPanel() {
   try {
-    const status = await api('/api/autonomous/status');
-    renderAutonomous(status);
+    const [status, checklist] = await Promise.all([
+      api('/api/autonomous/status'),
+      api('/api/live/checklist').catch(() => ({})),
+    ]);
+    const liveBlockers = checklist.crce_and_chaos || checklist.hard_blockers || [];
+    renderAutonomous(status, liveBlockers);
   } catch (e) {
     console.error('autonomous panel', e);
   }
+}
+
+async function repairCrce() {
+  const btn = document.getElementById('repairCrceBtn');
+  const prev = btn?.textContent;
+  try {
+    if (btn) { btn.textContent = 'Repairing…'; btn.disabled = true; }
+    const r = await api('/api/live/repair-crce', { method: 'POST' });
+    const msg = r.repair?.message || (r.crce_ok ? 'CRCE chain OK' : 'Repair finished');
+    alert(msg + (r.blockers?.length ? '\n\nRemaining blockers:\n' + r.blockers.join('\n') : '\n\nYou can run full chaos next.'));
+    loadAutonomousPanel();
+    loadDashboard();
+  } catch (e) {
+    alert('CRCE repair failed: ' + (e.message || e));
+  } finally {
+    if (btn) { btn.textContent = prev || '1. Repair CRCE'; btn.disabled = false; }
+  }
+}
+
+async function runFullChaos() {
+  const btn = document.getElementById('runChaosBtn');
+  const prev = btn?.textContent;
+  if (!confirm('Run the FULL chaos suite (25 scenarios)?\n\nTakes about 5–15 minutes. Stop autonomous first if it is running.')) return;
+  try {
+    if (btn) { btn.textContent = 'Starting…'; btn.disabled = true; }
+    await api('/api/autonomous/stop', { method: 'POST' }).catch(() => {});
+    const start = await api('/api/chaos/run?quick=false&background=true', { method: 'POST' });
+    if (!start.started && !start.running) {
+      alert(start.message || 'Could not start chaos suite');
+      return;
+    }
+    if (btn) btn.textContent = 'Chaos running…';
+    await pollChaosRun(btn, prev);
+  } catch (e) {
+    alert('Chaos run failed: ' + (e.message || e));
+    if (btn) { btn.textContent = prev || '2. Run full chaos'; btn.disabled = false; }
+  }
+}
+
+async function pollChaosRun(btn, prev) {
+  for (let i = 0; i < 120; i++) {
+    await new Promise(r => setTimeout(r, 8000));
+    try {
+      const st = await api('/api/chaos/run/status');
+      const gate = st.gate || {};
+      if (btn) btn.textContent = `Chaos… ${gate.scenario_count || 0}/${gate.required_scenario_count || 25}`;
+      if (!st.running) {
+        if (st.job?.error) throw new Error(st.job.error);
+        const approved = gate.live_capital_approved;
+        const score = gate.resilience_score;
+        const cls = gate.stability_classification;
+        alert(
+          approved
+            ? `Chaos PASSED — ${cls}, score ${score}. You can start autonomous now.`
+            : `Chaos finished but gate not passed (${cls}, score ${score}).\n\n${(gate.blockers || []).join('\n')}`
+        );
+        loadAutonomousPanel();
+        loadDashboard();
+        if (btn) { btn.textContent = prev || '2. Run full chaos'; btn.disabled = false; }
+        return;
+      }
+    } catch (e) {
+      alert('Chaos status error: ' + (e.message || e));
+      if (btn) { btn.textContent = prev || '2. Run full chaos'; btn.disabled = false; }
+      return;
+    }
+  }
+  alert('Chaos still running — refresh the page in a few minutes and check readiness.');
+  if (btn) { btn.textContent = prev || '2. Run full chaos'; btn.disabled = false; }
 }
 
 async function startAutonomous() {
@@ -554,7 +644,7 @@ async function startAutonomous() {
     alert(
       'Autonomous start is blocked in LIVE mode:\n\n'
       + blockers.map((b, i) => `${i + 1}. ${b}`).join('\n')
-      + '\n\nFix: run the full chaos suite on the server, then retry.'
+      + '\n\nUse the buttons below: 1) Repair CRCE  2) Run full chaos'
     );
     return;
   }

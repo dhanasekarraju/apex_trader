@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-06-17T01:08:49.486118+00:00",
+  "generated_at": "2026-06-17T10:28:14.010916+00:00",
   "full_suite": false,
   "scenario_count": 4,
   "resilience_score": 81,
@@ -10,7 +10,7 @@
     "kill_switch_accuracy_pct": 25.0,
     "reconciliation_drift_rate_pct": 0.0,
     "duplicate_order_detection_rate_pct": 100.0,
-    "system_recovery_time_ms": 57.7,
+    "system_recovery_time_ms": 68.7,
     "portfolio_consistency_score": 100.0,
     "scenario_pass_rate_pct": 100.0
   },
@@ -19,26 +19,26 @@
   "recovery_timeline": [
     {
       "scenario_id": "broker_rejection_spike",
-      "duration_ms": 62.60032000136562,
-      "recovery_time_ms": 62.60032000136562,
+      "duration_ms": 75.7918760064058,
+      "recovery_time_ms": 75.7918760064058,
       "passed": true
     },
     {
       "scenario_id": "market_illiquidity",
-      "duration_ms": 64.41724600153975,
-      "recovery_time_ms": 64.41724600153975,
+      "duration_ms": 67.22076001460664,
+      "recovery_time_ms": 67.22076001460664,
       "passed": true
     },
     {
       "scenario_id": "system_crce_failure",
-      "duration_ms": 44.61629901197739,
-      "recovery_time_ms": 44.61629901197739,
+      "duration_ms": 44.317805994069204,
+      "recovery_time_ms": 44.317805994069204,
       "passed": true
     },
     {
       "scenario_id": "system_risk_timeout",
-      "duration_ms": 59.003898000810295,
-      "recovery_time_ms": 59.003898000810295,
+      "duration_ms": 87.4212539929431,
+      "recovery_time_ms": 87.4212539929431,
       "passed": true
     }
   ],
@@ -53,7 +53,7 @@
       "scenario_id": "broker_rejection_spike",
       "passed": true,
       "safe": true,
-      "duration_ms": 62.60032000136562,
+      "duration_ms": 75.7918760064058,
       "icb_decision": "ALLOW",
       "risk_verdict": "NO_TRADE",
       "execution_status": "NO_TRADE",
@@ -66,13 +66,13 @@
       "observations": [
         "ICB: ALLOW \u2014 Authority checks passed"
       ],
-      "recovery_time_ms": 62.60032000136562
+      "recovery_time_ms": 75.7918760064058
     },
     {
       "scenario_id": "market_illiquidity",
       "passed": true,
       "safe": true,
-      "duration_ms": 64.41724600153975,
+      "duration_ms": 67.22076001460664,
       "icb_decision": "ALLOW",
       "risk_verdict": "NO_TRADE",
       "execution_status": "NO_TRADE",
@@ -85,13 +85,13 @@
       "observations": [
         "ICB: ALLOW \u2014 Authority checks passed"
       ],
-      "recovery_time_ms": 64.41724600153975
+      "recovery_time_ms": 67.22076001460664
     },
     {
       "scenario_id": "system_crce_failure",
       "passed": true,
       "safe": true,
-      "duration_ms": 44.61629901197739,
+      "duration_ms": 44.317805994069204,
       "icb_decision": "ALLOW",
       "risk_verdict": "NO_TRADE",
       "execution_status": "NO_TRADE",
@@ -104,13 +104,13 @@
       "observations": [
         "ICB: ALLOW \u2014 Authority checks passed"
       ],
-      "recovery_time_ms": 44.61629901197739
+      "recovery_time_ms": 44.317805994069204
     },
     {
       "scenario_id": "system_risk_timeout",
       "passed": true,
       "safe": true,
-      "duration_ms": 59.003898000810295,
+      "duration_ms": 87.4212539929431,
       "icb_decision": "ALLOW",
       "risk_verdict": "NO_TRADE",
       "execution_status": "NO_TRADE",
@@ -123,7 +123,7 @@
       "observations": [
         "ICB: ALLOW \u2014 Authority checks passed"
       ],
-      "recovery_time_ms": 59.003898000810295
+      "recovery_time_ms": 87.4212539929431
     }
   ],
   "safe_for_live_capital": false,

@@ -21,8 +21,13 @@ def engine(orch):
     return orch.autonomous
 
 
-def test_watchlist_loads_symbols():
+def test_watchlist_loads_symbols(monkeypatch):
+    monkeypatch.setenv("WATCHLIST_MODE", "static")
+    from shared.config import get_settings
+
+    get_settings.cache_clear()
     wl = WatchlistProvider()
+    wl.cfg = get_settings()
     symbols = wl.resolve()
     assert len(symbols) >= 4
     assert "RELIANCE" in symbols
@@ -77,7 +82,11 @@ async def test_tick_routes_through_orchestrator(engine, monkeypatch):
         return {"action": "NO_TRADE", "symbol": symbol, "reason": "test"}
 
     engine.orch.analyze_symbol = fake_analyze  # type: ignore[method-assign]
-    engine.watchlist.resolve = lambda: ["RELIANCE", "TCS"]  # type: ignore[method-assign]
+
+    async def fake_scan(market_data=None):
+        return ["RELIANCE", "TCS"]
+
+    engine.watchlist.resolve_scan_symbols = fake_scan  # type: ignore[method-assign]
     engine._in_session = lambda: True  # type: ignore[method-assign]
 
     with patch("services.autonomous.engine.is_autonomous_running", new=AsyncMock(return_value=True)):

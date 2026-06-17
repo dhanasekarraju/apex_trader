@@ -1,4 +1,4 @@
-# Institutional NSE watchlist — autonomous scan universe
+# Static fallback watchlist — used only when WATCHLIST_MODE=static
 symbols:
   - RELIANCE
   - TCS
