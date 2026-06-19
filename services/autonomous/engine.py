@@ -75,11 +75,7 @@ class AutonomousEngine:
     async def status(self) -> dict:
         cached = await get_autonomous_status()
         running = await is_autonomous_running()
-        if self.cfg.watchlist_mode == "dynamic" and not self.watchlist.last_universe_meta():
-            try:
-                await self.watchlist.resolve_scan_symbols(self.orch.data)
-            except Exception:
-                pass
+        await self.watchlist.load_universe_meta(self.orch.data)
         symbols = self.watchlist.resolve()
         universe = self.watchlist.last_universe_meta() or {}
         if self.cfg.watchlist_mode == "dynamic" and universe:
@@ -165,7 +161,7 @@ class AutonomousEngine:
             return status
 
         results: list[dict] = []
-        stats = {"scanned": 0, "buy": 0, "rejected": 0, "no_trade": 0, "errors": 0}
+        stats = {"scanned": 0, "buy": 0, "rejected": 0, "no_trade": 0, "errors": 0, "cooldown_skipped": 0}
 
         for symbol in symbols[: cfg.autonomous_max_symbols_per_cycle]:
             if self.orch.portfolio.is_trading_halted():
@@ -173,6 +169,7 @@ class AutonomousEngine:
                 break
 
             if self._in_cooldown(symbol):
+                stats["cooldown_skipped"] += 1
                 continue
 
             stats["scanned"] += 1
@@ -181,8 +178,10 @@ class AutonomousEngine:
                 action = decision.get("action", "NO_TRADE")
                 if action == "BUY":
                     stats["buy"] += 1
+                    self._symbol_cooldown[symbol] = datetime.now(_IST)
                 elif action == "REJECTED":
                     stats["rejected"] += 1
+                    self._symbol_cooldown[symbol] = datetime.now(_IST)
                 else:
                     stats["no_trade"] += 1
                 results.append(
@@ -193,10 +192,10 @@ class AutonomousEngine:
                         "strategy": decision.get("strategy"),
                     }
                 )
-                self._symbol_cooldown[symbol] = datetime.now(_IST)
                 self._log_cycle(symbol, decision)
             except Exception as e:
                 stats["errors"] += 1
+                self._symbol_cooldown[symbol] = datetime.now(_IST)
                 audit("autonomous_symbol_error", symbol=symbol, error=str(e))
                 results.append({"symbol": symbol, "action": "ERROR", "reason": str(e)})
 

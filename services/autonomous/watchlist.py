@@ -38,7 +38,7 @@ class WatchlistProvider:
             from services.autonomous.dynamic_universe import DynamicUniverseSelector
 
             selector = DynamicUniverseSelector(market_data=market_data)
-            snap = await selector.get_snapshot()
+            snap = await selector.get_snapshot(allow_build=True)
             self._last_universe = snap.to_dict()
             return self._prioritize_scan(snap.scan)
 
@@ -51,6 +51,30 @@ class WatchlistProvider:
             "source": "watchlist_file",
         }
         return static[:cap]
+
+    async def load_universe_meta(self, market_data: MarketDataService | None = None) -> dict | None:
+        """Read cached universe for UI — never triggers a full Kite quote sweep."""
+        if self.cfg.watchlist_mode != "dynamic":
+            static = self.resolve()
+            cap = self.cfg.autonomous_max_symbols_per_cycle
+            self._last_universe = {
+                "mode": "static",
+                "pool": static,
+                "scan": static[:cap],
+                "source": "watchlist_file",
+            }
+            return self._last_universe
+
+        from services.autonomous.dynamic_universe import DynamicUniverseSelector
+
+        selector = DynamicUniverseSelector(market_data=market_data)
+        cached = await selector.get_cached_snapshot()
+        if cached:
+            self._last_universe = cached.to_dict()
+            return self._last_universe
+        pending = await selector.get_snapshot(allow_build=False)
+        self._last_universe = pending.to_dict()
+        return self._last_universe
 
     def last_universe_meta(self) -> dict | None:
         return self._last_universe

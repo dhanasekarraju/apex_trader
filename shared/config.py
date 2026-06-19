@@ -128,6 +128,7 @@ class Settings(BaseSettings):
     # static = data/watchlist.yaml | dynamic = Kite trending pool daily
     watchlist_mode: str = "dynamic"
     autonomous_universe_pool_size: int = 50
+    autonomous_universe_max_quotes: int = 120
     autonomous_universe_min_price: float = 50.0
     autonomous_universe_min_volume: int = 50_000
     watchlist_symbols: str = ""

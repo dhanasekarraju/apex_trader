@@ -84,6 +84,20 @@ def _task_alive(task: asyncio.Task | None) -> bool:
     return task is not None and not task.done()
 
 
+async def _warmup_dynamic_universe() -> None:
+    cfg = get_settings()
+    if cfg.watchlist_mode != "dynamic":
+        return
+    try:
+        from services.autonomous.dynamic_universe import DynamicUniverseSelector
+
+        snap = await DynamicUniverseSelector(market_data=orch.data).refresh()
+        orch.autonomous.watchlist._last_universe = snap.to_dict()
+        audit("dynamic_universe_warmup", source=snap.source, scan=len(snap.scan))
+    except Exception as exc:
+        audit("dynamic_universe_warmup_failed", error=str(exc))
+
+
 def ensure_background_loops() -> None:
     """Start background loops if missing — survives partial startup failures."""
     global _refresh_task, _lifecycle_task, _autonomous_task
@@ -118,6 +132,8 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         startup_errors.append(f"orchestrator_startup: {e}")
     ensure_background_loops()
+    if get_settings().watchlist_mode == "dynamic":
+        asyncio.create_task(_warmup_dynamic_universe())
     if startup_errors:
         audit("startup_degraded", errors=startup_errors)
     yield
@@ -559,6 +575,8 @@ async def autonomous_start():
     if not result.get("ok"):
         blockers = result.get("blockers") or ["unknown blocker"]
         raise HTTPException(403, f"Autonomous start blocked: {', '.join(blockers)}")
+    if get_settings().watchlist_mode == "dynamic":
+        asyncio.create_task(_warmup_dynamic_universe())
     return result
 
 

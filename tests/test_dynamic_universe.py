@@ -41,7 +41,11 @@ async def test_dynamic_universe_ranks_kite_quotes():
     })
     selector = DynamicUniverseSelector(market_data=data)
     with patch("services.autonomous.dynamic_universe.cache_set", new=AsyncMock()):
-        snap = await selector.refresh()
+        with patch(
+            "services.autonomous.dynamic_universe.quote_candidates",
+            return_value=["AAA", "BBB", "CCC"],
+        ):
+            snap = await selector.refresh()
     assert snap.scan[0] == "BBB"
     assert snap.source == "kite_trending"
 

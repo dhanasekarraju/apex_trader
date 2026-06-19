@@ -2,13 +2,14 @@
 Daily dynamic watchlist — trending NSE equities from Kite, no manual symbol list.
 
 Flow (once per IST trading day):
-  1. Quote liquid NSE EQ universe via Kite
+  1. Quote a liquid candidate set via Kite (~120 names, NOT full NSE)
   2. Rank by volume × momentum → top 50 pool
   3. Pick top 15 for autonomous scanning that day
 """
 
 from __future__ import annotations
 
+import asyncio
 import json
 from dataclasses import dataclass
 from datetime import datetime
@@ -22,9 +23,10 @@ from shared.logging import audit
 _IST = ZoneInfo("Asia/Kolkata")
 _CACHE_PREFIX = "apex:universe"
 _TTL_SEC = 86400 * 2
+_BUILD_TIMEOUT_SEC = 45.0
 
-# Fallback when Kite is offline — liquid large/mid caps (no manual curation needed in ops)
-_FALLBACK_LIQUID: list[str] = [
+# Liquid NSE candidates for quote ranking — avoids quoting 2000+ symbols (API freeze).
+_LIQUID_CANDIDATES: list[str] = [
     "RELIANCE", "TCS", "HDFCBANK", "ICICIBANK", "INFY", "SBIN", "BHARTIARTL", "ITC",
     "KOTAKBANK", "LT", "AXISBANK", "HINDUNILVR", "MARUTI", "SUNPHARMA", "TITAN",
     "BAJFINANCE", "WIPRO", "HCLTECH", "ASIANPAINT", "ULTRACEMCO", "NESTLEIND",
@@ -32,6 +34,15 @@ _FALLBACK_LIQUID: list[str] = [
     "M&M", "TECHM", "JSWSTEEL", "INDUSINDBK", "BAJAJFINSV", "TRENT", "GRASIM",
     "HINDALCO", "CIPLA", "DRREDDY", "EICHERMOT", "BPCL", "DIVISLAB", "APOLLOHOSP",
     "HEROMOTOCO", "SBILIFE", "HDFCLIFE", "TATAMOTORS", "BEL", "HAL", "IRFC", "RVNL",
+    "VEDL", "DLF", "SIEMENS", "ABB", "PIDILITIND", "GODREJCP", "DABUR", "BRITANNIA",
+    "AMBUJACEM", "SHREECEM", "HAVELLS", "POLYCAB", "TORNTPHARM", "ICICIPRULI", "NAUKRI",
+    "ZOMATO", "JIOFIN", "DMART", "CANBK", "PNB", "BANKBARODA", "UNIONBANK", "IDFCFIRSTB",
+    "FEDERALBNK", "AUBANK", "CHOLAFIN", "SHRIRAMFIN", "MUTHOOTFIN", "LICI", "IOC",
+    "GAIL", "HINDPETRO", "TATAPOWER", "ADANIGREEN", "VBL", "UNITDSPR", "COLPAL",
+    "MARICO", "PAGEIND", "BOSCHLTD", "MRF", "TVSMOTOR", "ASHOKLEY", "BHARATFORG",
+    "CONCOR", "IRCTC", "INDIGO", "JINDALSTEL", "SAIL", "NMDC", "OBEROIRLTY", "LODHA",
+    "PRESTIGE", "PHOENIXLTD", "MAXHEALTH", "FORTIS", "LUPIN", "AUROPHARMA", "BIOCON",
+    "PERSISTENT", "COFORGE", "MPHASIS", "LTIM", "OFSS", "TATAELXSI", "KPITTECH",
 ]
 
 
@@ -77,6 +88,19 @@ def trending_score(quote: dict) -> float:
     return volume * (1.0 + pct)
 
 
+def quote_candidates(extra: list[str] | None = None, limit: int = 120) -> list[str]:
+    seen: set[str] = set()
+    out: list[str] = []
+    for sym in list(_LIQUID_CANDIDATES) + list(extra or []):
+        s = sym.strip().upper()
+        if s and s not in seen:
+            seen.add(s)
+            out.append(s)
+        if len(out) >= limit:
+            break
+    return out
+
+
 class DynamicUniverseSelector:
     def __init__(
         self,
@@ -90,17 +114,29 @@ class DynamicUniverseSelector:
         snap = await self.get_snapshot()
         return snap.scan
 
-    async def get_snapshot(self) -> UniverseSnapshot:
+    async def get_snapshot(self, *, allow_build: bool = True) -> UniverseSnapshot:
         trade_date = _today_ist()
         cached = await self._load_cache(trade_date)
         if cached:
             return cached
+        if not allow_build:
+            return self._fallback_snapshot(trade_date, source="fallback_pending")
         return await self.refresh()
+
+    async def get_cached_snapshot(self) -> UniverseSnapshot | None:
+        return await self._load_cache(_today_ist())
 
     async def refresh(self) -> UniverseSnapshot:
         """Force rebuild of today's pool + scan list."""
         trade_date = _today_ist()
-        built = await self._build_universe(trade_date)
+        try:
+            built = await asyncio.wait_for(
+                self._build_universe(trade_date),
+                timeout=_BUILD_TIMEOUT_SEC,
+            )
+        except asyncio.TimeoutError:
+            audit("dynamic_universe_timeout", trade_date=trade_date)
+            built = self._fallback_snapshot(trade_date, source="fallback_timeout")
         await self._save_cache(built)
         return built
 
@@ -126,6 +162,21 @@ class DynamicUniverseSelector:
 
     async def _save_cache(self, snap: UniverseSnapshot) -> None:
         await cache_set(_cache_key(snap.trade_date), json.dumps(snap.to_dict()), ttl=_TTL_SEC)
+
+    def _fallback_snapshot(self, trade_date: str, *, source: str) -> UniverseSnapshot:
+        pool_size = self.cfg.autonomous_universe_pool_size
+        scan_size = min(self.cfg.autonomous_max_symbols_per_cycle, pool_size)
+        pool = _LIQUID_CANDIDATES[:pool_size]
+        scan = pool[:scan_size]
+        return UniverseSnapshot(
+            trade_date=trade_date,
+            pool=pool,
+            scan=scan,
+            source=source,
+            refreshed_at=datetime.now(_IST).isoformat(),
+            pool_size=len(pool),
+            scan_size=len(scan),
+        )
 
     async def _build_universe(self, trade_date: str) -> UniverseSnapshot:
         pool_size = self.cfg.autonomous_universe_pool_size
@@ -154,40 +205,35 @@ class DynamicUniverseSelector:
             except Exception as exc:
                 audit("dynamic_universe_kite_failed", error=str(exc))
 
-        pool = _FALLBACK_LIQUID[:pool_size]
-        scan = pool[:scan_size]
-        audit("dynamic_universe_fallback", pool=len(pool), scan=len(scan))
-        return UniverseSnapshot(
-            trade_date=trade_date,
-            pool=pool,
-            scan=scan,
-            source="fallback_liquid",
-            refreshed_at=refreshed_at,
-            pool_size=len(pool),
-            scan_size=len(scan),
-        )
+        return self._fallback_snapshot(trade_date, source="fallback_liquid")
 
     async def _build_from_kite(self, pool_size: int, scan_size: int) -> tuple[list[str], list[str], str]:
-        symbols = await self.data.list_nse_eq_symbols()
-        if not symbols:
-            raise RuntimeError("No NSE EQ symbols from Kite")
+        from services.autonomous.watchlist import WatchlistProvider
 
-        quotes = await self.data.fetch_market_quotes(symbols)
+        static_extra = WatchlistProvider(self.cfg).resolve()
+        candidates = quote_candidates(
+            static_extra,
+            limit=self.cfg.autonomous_universe_max_quotes,
+        )
+        quotes = await self.data.fetch_market_quotes(candidates)
         min_price = self.cfg.autonomous_universe_min_price
         min_volume = self.cfg.autonomous_universe_min_volume
 
         ranked: list[tuple[str, float]] = []
-        for sym, q in quotes.items():
+        for sym in candidates:
+            q = quotes.get(sym.upper())
+            if not q:
+                continue
             last = float(q.get("last_price") or 0)
             vol = float(q.get("volume") or 0)
             if last < min_price or vol < min_volume:
                 continue
-            ranked.append((sym, trending_score(q)))
+            ranked.append((sym.upper(), trending_score(q)))
 
         ranked.sort(key=lambda x: x[1], reverse=True)
         pool = [s for s, _ in ranked[:pool_size]]
         if len(pool) < scan_size:
-            extras = [s for s in _FALLBACK_LIQUID if s not in pool]
+            extras = [s for s in _LIQUID_CANDIDATES if s not in pool]
             pool.extend(extras[: max(0, pool_size - len(pool))])
         scan = pool[:scan_size]
         return pool, scan, "kite_trending"
