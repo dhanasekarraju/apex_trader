@@ -63,6 +63,7 @@ class TradingOrchestrator:
         from services.autonomous.engine import AutonomousEngine
 
         self.autonomous = AutonomousEngine(self)
+        self._last_capital_sync: float = 0.0
 
     async def startup(self) -> None:
         from services.brokers.kite_auth import kite_auth
@@ -78,16 +79,42 @@ class TradingOrchestrator:
             await set_emergency_halt(True)
             await icb.activate_emergency_lock("Startup with active kill switch")
         recovery = await self.execution.recover()
+        await self.sync_capital_from_kite(force=True)
         await self.refresh_control_cache()
         if self.cfg.autonomous_auto_start and self.cfg.autonomous_enabled:
             if not self.portfolio.is_trading_halted() and not await get_kill_switch_latched():
                 await self.autonomous.start()
         audit("orchestrator_startup", **recovery)
 
+    async def sync_capital_from_kite(self, *, force: bool = False) -> dict:
+        """Pull equity/cash from Kite margins into Postgres portfolio state."""
+        import time
+
+        from services.brokers.factory import get_broker
+
+        if not self.cfg.sync_capital_from_kite:
+            return {"skipped": "disabled"}
+        if self.cfg.trading_mode != "live":
+            return {"skipped": self.cfg.trading_mode}
+        now = time.monotonic()
+        if not force and (now - self._last_capital_sync) < self.cfg.capital_sync_interval_sec:
+            return {"skipped": "throttled"}
+        broker = get_broker()
+        if broker.name != "kite":
+            return {"skipped": "not_kite_broker"}
+        if not await broker.connect():
+            return {"skipped": "kite_not_connected"}
+        funds = await broker.fetch_account_equity()
+        if not funds.get("ok"):
+            return funds
+        self._last_capital_sync = now
+        return await self.portfolio.sync_capital_from_kite(funds["equity"], funds["cash"])
+
     async def refresh_control_cache(self) -> None:
         """Refresh Redis PnL + risk snapshots for live UI."""
         from services.control.halt import cache_pnl_snapshot, cache_risk_snapshot
 
+        await self.sync_capital_from_kite()
         pnl = await self.pnl_engine.compute()
         risk = self.risk_dashboard.compute(pnl)
         await cache_pnl_snapshot(pnl)

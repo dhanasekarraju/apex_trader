@@ -412,6 +412,12 @@ async def get_mode():
     }
 
 
+@app.post("/api/portfolio/sync-capital", dependencies=[Depends(require_api_auth)])
+async def portfolio_sync_capital():
+    """Pull equity/cash from Kite margins into DB (live mode)."""
+    return await orch.sync_capital_from_kite(force=True)
+
+
 @app.get("/api/kite/status")
 async def kite_status():
     from services.brokers.kite_auth import kite_auth
@@ -447,6 +453,7 @@ async def kite_callback(
         await kite_auth.complete_login(request_token)
         orch.data._real_data_ok = None
         await orch.execution.connect()
+        await orch.sync_capital_from_kite(force=True)
         return RedirectResponse(_app_url("/?kite=connected"))
     except Exception as e:
         import urllib.parse

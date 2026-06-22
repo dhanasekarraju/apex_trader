@@ -6,6 +6,7 @@ from services.portfolio.models import PortfolioState, PositionView
 from services.portfolio.repository import PortfolioRepository
 from services.risk.engine import TradeProposal
 from shared.config import get_settings
+from shared.logging import audit
 
 # Re-export for callers importing from manager
 __all__ = ["PortfolioManager", "PortfolioState", "PositionView"]
@@ -165,4 +166,38 @@ class PortfolioManager:
             "circuit_breaker": s.circuit_breaker,
             "black_swan_mode": s.black_swan_mode,
             "trading_halted": self.is_trading_halted(),
+        }
+
+    async def sync_capital_from_kite(self, equity: float, cash: float) -> dict:
+        """Update internal ledger from Zerodha margins — broker is source of truth for capital."""
+        if equity <= 0:
+            return {"ok": False, "reason": "invalid_equity"}
+        previous = round(self.state.equity, 2)
+        self.state.equity = round(equity, 2)
+        self.state.cash = round(max(0.0, cash), 2)
+        if self.state.peak_equity < self.state.equity:
+            self.state.peak_equity = self.state.equity
+        await self.persist()
+        from services.compliance.events import EventType
+        from services.compliance.recorder import crce
+
+        await crce.record(
+            event_type=EventType.PORTFOLIO_UPDATE,
+            action="SYNC_KITE_CAPITAL",
+            decision="EXECUTED",
+            reason=f"equity {previous} -> {self.state.equity}",
+            portfolio=self,
+        )
+        audit(
+            "capital_synced_from_kite",
+            previous=previous,
+            equity=self.state.equity,
+            cash=self.state.cash,
+        )
+        return {
+            "ok": True,
+            "previous_equity": previous,
+            "equity": self.state.equity,
+            "cash": self.state.cash,
+            "source": "kite_margins",
         }

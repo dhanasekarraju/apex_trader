@@ -139,6 +139,8 @@ class Settings(BaseSettings):
     watchlist_symbols: str = ""
     watchlist_file: str = "data/watchlist.yaml"
     enforce_sector_correlation_limits: bool = False
+    sync_capital_from_kite: bool = True
+    capital_sync_interval_sec: float = 300.0
 
     # API security
     api_access_key: str = ""

@@ -366,3 +366,31 @@ class KiteBroker(BrokerAdapter):
             audit("kite_flatten_symbol_failed", symbol=sym, error=str(e))
         audit("kite_flatten_symbol", symbol=sym, count=count)
         return count
+
+    async def fetch_account_equity(self) -> dict:
+        """Pull live equity/cash from Kite margins (equity segment)."""
+        if not self._kite and not await self.connect():
+            return {"ok": False, "error": "not_connected"}
+        try:
+            loop = asyncio.get_event_loop()
+            margins = await loop.run_in_executor(None, self._kite.margins)
+            eq = margins.get("equity") or {}
+            net = float(eq.get("net") or 0)
+            available = eq.get("available") or {}
+            cash = float(
+                available.get("live_balance")
+                or available.get("cash")
+                or available.get("opening_balance")
+                or net
+            )
+            if net <= 0:
+                return {"ok": False, "error": "zero_equity", "raw": eq}
+            return {
+                "ok": True,
+                "equity": round(net, 2),
+                "cash": round(max(0.0, cash), 2),
+                "source": "kite_margins",
+            }
+        except Exception as exc:
+            audit("kite_margins_failed", error=str(exc))
+            return {"ok": False, "error": str(exc)}

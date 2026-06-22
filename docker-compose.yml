@@ -43,6 +43,8 @@ services:
       DATABASE_URL: postgresql+asyncpg://apex:apex@postgres:5432/apex_trader
       DATABASE_URL_SYNC: postgresql://apex:apex@postgres:5432/apex_trader
       REDIS_URL: redis://redis:6379/0
+    volumes:
+      - ./data:/app/data
     depends_on:
       postgres:
         condition: service_healthy
