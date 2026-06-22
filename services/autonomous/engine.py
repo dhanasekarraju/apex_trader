@@ -43,7 +43,7 @@ class AutonomousEngine:
         from services.icb.actions import ICBAction
         from services.icb.engine import icb
 
-        blockers = self._start_blockers()
+        blockers = await self._start_blockers()
         if blockers:
             return {"ok": False, "running": False, "blockers": blockers}
 
@@ -80,7 +80,7 @@ class AutonomousEngine:
         universe = self.watchlist.last_universe_meta() or {}
         if self.cfg.watchlist_mode == "dynamic" and universe:
             symbols = universe.get("pool") or symbols
-        blockers = self._start_blockers() if not running else []
+        blockers = await self._start_blockers() if not running else []
         last_cycle = self._last_cycle_at.isoformat() if self._last_cycle_at else None
         if cached and cached.get("last_cycle_at"):
             last_cycle = cached["last_cycle_at"]
@@ -226,7 +226,9 @@ class AutonomousEngine:
         audit("autonomous_cycle_complete", **stats)
         return status
 
-    def _start_blockers(self) -> list[str]:
+    async def _start_blockers(self) -> list[str]:
+        import asyncio
+
         cfg = get_settings()
         blockers: list[str] = []
         if not cfg.autonomous_enabled:
@@ -240,9 +242,11 @@ class AutonomousEngine:
                 blockers.append("GOLIVE_APPROVED is false")
             from services.live.checklist import live_capital_blockers
 
-            blockers.extend(live_capital_blockers(require_full_suite=True))
+            blockers.extend(
+                await asyncio.to_thread(live_capital_blockers, require_full_suite=True),
+            )
         if self.orch.portfolio.is_trading_halted():
-            blockers.append("Kill switch active")
+            blockers.append("Kill switch active — click Resume trading to clear")
         return blockers
 
     def _cycle_gates(self) -> str | None:

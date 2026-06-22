@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -27,7 +28,7 @@ async def collect_signals(context: dict[str, Any]) -> SystemSignals:
     try:
         from services.compliance.store import EventStore
 
-        integrity = EventStore().verify_chain()
+        integrity = await asyncio.to_thread(EventStore().verify_chain)
         signals.crce_integrity = "ok" if integrity.get("valid") else "drift"
         if not integrity.get("valid"):
             signals.issues.append("CRCE hash chain invalid")
@@ -41,7 +42,7 @@ async def collect_signals(context: dict[str, Any]) -> SystemSignals:
     try:
         from services.compliance.drift import DriftDetector
 
-        drifts = DriftDetector().scan()
+        drifts = await asyncio.to_thread(DriftDetector().scan_recent, 800)
         signals.drift_count = len(drifts)
         if drifts:
             signals.issues.append(f"{len(drifts)} drift(s) detected")

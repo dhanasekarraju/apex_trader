@@ -34,20 +34,22 @@ def test_watchlist_loads_symbols(monkeypatch):
     assert len(symbols) == len(set(symbols))
 
 
-def test_start_blockers_when_disabled(engine, monkeypatch):
+@pytest.mark.asyncio
+async def test_start_blockers_when_disabled(engine, monkeypatch):
     monkeypatch.setenv("AUTONOMOUS_ENABLED", "false")
     from shared.config import get_settings
 
     get_settings.cache_clear()
     engine.cfg = get_settings()
-    blockers = engine._start_blockers()
+    blockers = await engine._start_blockers()
     assert any("AUTONOMOUS_ENABLED" in b for b in blockers)
 
 
-def test_start_blockers_when_halted(engine):
+@pytest.mark.asyncio
+async def test_start_blockers_when_halted(engine):
     engine.orch.portfolio.emergency_shutdown()
-    blockers = engine._start_blockers()
-    assert "Kill switch active" in blockers
+    blockers = await engine._start_blockers()
+    assert any("Kill switch active" in b for b in blockers)
 
 
 @pytest.mark.asyncio

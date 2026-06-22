@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -15,6 +16,19 @@ _ROOT = Path(__file__).resolve().parents[2]
 EVENT_LOG = _ROOT / "data" / "compliance" / "event_log.jsonl"
 HASH_FILE = _ROOT / "data" / "compliance" / "last_hash.txt"
 GENESIS_HASH = "0" * 64
+_VERIFY_CACHE_TTL_SEC = 45.0
+_verify_cache: dict[str, tuple[float, dict[str, Any]]] = {}
+
+
+def _cache_key_for_path(path: Path) -> str:
+    return str(path.resolve())
+
+
+def invalidate_verify_cache(path: Path | None = None) -> None:
+    if path is None:
+        _verify_cache.clear()
+        return
+    _verify_cache.pop(_cache_key_for_path(path), None)
 
 
 def _ensure_dirs() -> None:
@@ -110,6 +124,7 @@ class EventStore:
         with self.path.open("a", encoding="utf-8") as f:
             f.write(json.dumps(record, default=str) + "\n")
         self._write_last_hash(event_hash)
+        invalidate_verify_cache(self.path)
         return record
 
     def load_all(self) -> list[dict[str, Any]]:
@@ -146,32 +161,46 @@ class EventStore:
         return out
 
     def verify_chain(self) -> dict[str, Any]:
+        cache_key = _cache_key_for_path(self.path)
+        cached = _verify_cache.get(cache_key)
+        now = time.monotonic()
+        if cached and (now - cached[0]) < _VERIFY_CACHE_TTL_SEC:
+            return cached[1]
+
         events = self.load_all()
         if not events:
-            return {"valid": True, "events": 0, "message": "empty ledger"}
+            result = {"valid": True, "events": 0, "message": "empty ledger"}
+            _verify_cache[cache_key] = (now, result)
+            return result
 
         prev = GENESIS_HASH
         for i, record in enumerate(events):
             stored_prev = record.get("prev_hash", GENESIS_HASH)
             if stored_prev != prev:
-                return {
+                result = {
                     "valid": False,
                     "broken_at_index": i,
                     "expected_prev_hash": prev,
                     "stored_prev_hash": stored_prev,
                 }
+                _verify_cache[cache_key] = (now, result)
+                return result
             body = {k: v for k, v in record.items() if k not in ("prev_hash", "event_hash")}
             canonical = json.dumps(body, sort_keys=True, default=str)
             expected = hashlib.sha256(f"{prev}{canonical}".encode()).hexdigest()
             if record.get("event_hash") != expected:
-                return {
+                result = {
                     "valid": False,
                     "broken_at_index": i,
                     "expected_hash": expected,
                     "stored_hash": record.get("event_hash"),
                 }
+                _verify_cache[cache_key] = (now, result)
+                return result
             prev = record["event_hash"]
-        return {"valid": True, "events": len(events), "head_hash": prev}
+        result = {"valid": True, "events": len(events), "head_hash": prev}
+        _verify_cache[cache_key] = (now, result)
+        return result
 
     def repair_chain(self) -> dict[str, Any]:
         """Truncate ledger at first break and reset head hash — ops recovery only."""
@@ -200,6 +229,7 @@ class EventStore:
                 f.write(json.dumps(record, default=str) + "\n")
         head = valid[-1]["event_hash"] if valid else GENESIS_HASH
         self._write_last_hash(head)
+        invalidate_verify_cache(self.path)
         return {
             "ok": True,
             "kept": len(valid),

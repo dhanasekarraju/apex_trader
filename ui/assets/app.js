@@ -384,10 +384,11 @@ function renderTradeStream(events) {
 
 async function loadControlPanel() {
   try {
-    const [pnl, risk, trades] = await Promise.all([
+    const [pnl, risk, trades, icb] = await Promise.all([
       api('/api/risk/pnl/live'),
       api('/api/risk/status'),
       api('/api/risk/trades/recent?limit=20'),
+      api('/api/icb/status').catch(() => ({})),
     ]);
 
     const portPnl = document.getElementById('livePortfolioPnl');
@@ -416,7 +417,7 @@ async function loadControlPanel() {
       sysPill.className = 'pill ' + cls;
     }
 
-    const halted = !!risk.kill_switch;
+    const halted = !!(risk.kill_switch || icb.kill_switch_latched || icb.system_state === 'EMERGENCY_LOCK');
     document.getElementById('killSwitchLabel').textContent = halted ? 'ON' : 'OFF';
     document.getElementById('killSwitchLabel').className = 'metric ' + (halted ? 'red' : 'green');
     const killBtn = document.getElementById('killSwitchBtn');
@@ -470,8 +471,17 @@ async function emergencyFlatten() {
 
 async function resumeTrading() {
   if (!confirm('Clear kill switch and resume trading? Only do this after reviewing what triggered the stop.')) return;
-  const r = await api('/api/admin/kill-switch/off', { method: 'POST' });
-  alert(r.message || 'Trading resumed.');
+  try {
+    const r = await api('/api/admin/kill-switch/off', { method: 'POST' });
+    if (!r.ok) {
+      alert(r.message || 'Could not resume trading.');
+      return;
+    }
+    alert(r.message || 'Trading resumed.');
+  } catch (e) {
+    alert('Resume failed: ' + (e.message || e));
+    return;
+  }
   loadDashboard();
   loadControlPanel();
   loadAutonomousPanel();

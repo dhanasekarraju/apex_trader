@@ -16,6 +16,16 @@ class DriftDetector:
 
     def scan(self, events: list[dict] | None = None) -> list[dict[str, Any]]:
         events = events or self.store.load_all()
+        return self._scan_events(events)
+
+    def scan_recent(self, limit: int = 800) -> list[dict[str, Any]]:
+        """Scan only recent events — fast path for ICB on large ledgers."""
+        events = self.store.load_all()
+        if len(events) > limit:
+            events = events[-limit:]
+        return self._scan_events(events)
+
+    def _scan_events(self, events: list[dict]) -> list[dict[str, Any]]:
         drifts: list[dict[str, Any]] = []
 
         risk_by_symbol: dict[str, dict] = {}

@@ -129,13 +129,14 @@ async def test_orchestrator_analyze_blocked_when_emergency_lock(clear_kill_latch
 
 
 @pytest.mark.asyncio
-async def test_resume_blocked_after_emergency_lock(clear_kill_latch):
+async def test_resume_clears_emergency_lock_after_kill_switch(clear_kill_latch):
     orch = TradingOrchestrator()
     await control_layer.activate_kill_switch()
     orch.portfolio.emergency_shutdown()
 
     result = await orch.resume_trading()
-    assert result["ok"] is False
+    assert result["ok"] is True
+    assert not await get_kill_switch_latched()
 
 
 @pytest.mark.asyncio

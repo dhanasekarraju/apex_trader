@@ -450,12 +450,7 @@ class TradingOrchestrator:
         from services.icb.system_state import get_kill_switch_latched
 
         if await get_kill_switch_latched():
-            return {
-                "ok": False,
-                "message": "EMERGENCY_LOCK — manual admin reset required",
-                "trading_halted": True,
-                "system_state": "EMERGENCY_LOCK",
-            }
+            return await self.admin_reset_kill_switch()
 
         icb_result = await icb.authorize(
             ICBAction.RESUME,
@@ -494,8 +489,9 @@ class TradingOrchestrator:
         await self.refresh_control_cache()
         return {
             "ok": True,
-            "message": "Emergency lock cleared — review incident before resuming autonomous",
+            "message": "Kill switch cleared — trading resumed. Start autonomous when ready.",
             "system_state": self.cfg.trading_mode,
+            "trading_halted": False,
         }
 
     async def emergency_flatten(self) -> dict:
