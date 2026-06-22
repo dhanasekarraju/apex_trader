@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Restore https://veldaris.in/apex/ when the API backend is down.
+# Restore https://tn88seval.in/apex/ when the API backend is down.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -40,7 +40,7 @@ for i in $(seq 1 30); do
     echo "API healthy after ${i}s"
     curl -sf http://127.0.0.1:8080/api/health | python3 -m json.tool
     echo ""
-    echo "Site should load at: https://veldaris.in/apex/"
+    echo "Site should load at: https://tn88seval.in/apex/"
     exit 0
   fi
   sleep 2

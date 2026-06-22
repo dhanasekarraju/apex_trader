@@ -51,6 +51,10 @@ class PositionLifecycleService:
         if self.portfolio.is_trading_halted():
             return {"checked": 0, "exits": 0}
 
+        positions = list(self.portfolio.state.positions)
+        if not positions:
+            return {"checked": 0, "exits": 0}
+
         mode = self.cfg.trading_mode
         if mode == "shadow":
             return {"checked": 0, "exits": 0, "skipped": "shadow"}
@@ -61,7 +65,6 @@ class PositionLifecycleService:
 
         exits = 0
         checked = 0
-        positions = list(self.portfolio.state.positions)
 
         for pos in positions:
             checked += 1

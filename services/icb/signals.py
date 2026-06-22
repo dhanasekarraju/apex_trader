@@ -42,7 +42,7 @@ async def collect_signals(context: dict[str, Any]) -> SystemSignals:
     try:
         from services.compliance.drift import DriftDetector
 
-        drifts = await asyncio.to_thread(DriftDetector().scan_recent, 800)
+        drifts = await asyncio.to_thread(DriftDetector().scan)
         signals.drift_count = len(drifts)
         if drifts:
             signals.issues.append(f"{len(drifts)} drift(s) detected")

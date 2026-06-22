@@ -3,7 +3,7 @@
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
-BASE_URL="${APEX_URL:-https://veldaris.in/apex}"
+BASE_URL="${APEX_URL:-https://tn88seval.in/apex}"
 
 export API_KEY="${API_KEY:-$(python3 -c "
 import hashlib

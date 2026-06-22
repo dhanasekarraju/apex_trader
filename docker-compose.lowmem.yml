@@ -1,0 +1,32 @@
+# OPTIONAL overlay for legacy 1GB hosts only — do NOT use on 4GB+ production.
+services:
+  postgres:
+    command: >
+      postgres
+      -c shared_buffers=32MB
+      -c effective_cache_size=64MB
+      -c maintenance_work_mem=16MB
+      -c work_mem=2MB
+      -c max_connections=15
+      -c wal_buffers=1MB
+    mem_limit: 128m
+    ports: []
+
+  redis:
+    command: redis-server --maxmemory 32mb --maxmemory-policy allkeys-lru --save ""
+    mem_limit: 48m
+    ports: []
+
+  api:
+    mem_limit: 450m
+    environment:
+      LOW_MEMORY_MODE: "true"
+      CONTROL_REFRESH_SEC: "20"
+      LIFECYCLE_POLL_SEC: "30"
+      UI_POLL_INTERVAL_SEC: "15"
+      AUTONOMOUS_IDLE_POLL_SEC: "120"
+      DATABASE_POOL_SIZE: "2"
+      DATABASE_MAX_OVERFLOW: "0"
+      SKIP_DYNAMIC_UNIVERSE_WARMUP: "true"
+      MALLOC_ARENA_MAX: "2"
+      PYTHONDONTWRITEBYTECODE: "1"

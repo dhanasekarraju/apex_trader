@@ -41,10 +41,11 @@ async def _control_refresh_loop() -> None:
     from services.control.reconciliation_state import is_reconciliation_degraded
 
     while True:
+        cfg = get_settings()
         try:
             icl = await control_layer.allow(
                 ControlAction.RESET_PNL,
-                {"portfolio": orch.portfolio, "trading_mode": get_settings().trading_mode},
+                {"portfolio": orch.portfolio, "trading_mode": cfg.trading_mode},
             )
             if icl.allowed:
                 await maybe_reset_pnl_periods(orch.portfolio)
@@ -53,7 +54,7 @@ async def _control_refresh_loop() -> None:
             await orch.refresh_control_cache()
         except Exception as e:
             audit("control_refresh_failed", error=str(e))
-        await asyncio.sleep(3)
+        await asyncio.sleep(cfg.control_refresh_sec)
 
 
 async def _lifecycle_loop() -> None:
@@ -239,6 +240,12 @@ async def index():
     html = html.replace(
         "window.APEX_API_KEY = '';",
         f"window.APEX_API_KEY = {json.dumps(api_key)};",
+    )
+    cfg = get_settings()
+    poll_ms = int(max(cfg.ui_poll_interval_sec, 1.0) * 1000)
+    html = html.replace(
+        "window.APEX_UI_POLL_MS = 3000;",
+        f"window.APEX_UI_POLL_MS = {poll_ms};",
     )
     return HTMLResponse(html)
 

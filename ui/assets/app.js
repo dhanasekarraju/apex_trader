@@ -698,6 +698,6 @@ handleKiteQueryParams();
 loadDashboard();
 loadControlPanel();
 loadAutonomousPanel();
-setInterval(loadControlPanel, 3000);
+setInterval(loadControlPanel, window.APEX_UI_POLL_MS || 3000);
 setInterval(loadDashboard, 30000);
 setInterval(loadKiteStatus, 60000);

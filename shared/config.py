@@ -28,8 +28,8 @@ class Settings(BaseSettings):
     api_port: int = 8080
     secret_key: str = "dev-secret-change-me"
     # Public URL when behind nginx (no trailing slash). Set APP_BASE_PATH=/apex for subpath deploy.
-    public_url: str = "https://veldaris.in"
-    app_base_path: str = ""
+    public_url: str = "https://tn88seval.in"
+    app_base_path: str = "/apex"
 
     # Capital & risk
     initial_capital: float = 1_000_000.0
@@ -66,7 +66,7 @@ class Settings(BaseSettings):
     kite_api_key: str = ""
     kite_api_secret: str = ""
     kite_access_token: str = ""  # optional fallback; prefer UI OAuth session
-    kite_redirect_url: str = "https://veldaris.in/apex/api/kite/callback"
+    kite_redirect_url: str = "https://tn88seval.in/apex/api/kite/callback"
     # -1 = auto (Kite exchange band); 1-100 = custom %. Never use 0 (rejected since Apr 2025).
     kite_market_protection: int = -1
     kite_exchange: str = "NSE"
@@ -114,10 +114,15 @@ class Settings(BaseSettings):
     enforce_market_hours: bool = True
     max_entry_deviation_pct: float = 2.0
     lifecycle_poll_sec: float = 5.0
+    control_refresh_sec: float = 3.0
+    ui_poll_interval_sec: float = 3.0
+    database_pool_size: int = 5
+    database_max_overflow: int = 2
 
     # Autonomous engine (institutional scan → analyze → execute)
     autonomous_enabled: bool = True
     autonomous_allow_live: bool = False
+    autonomous_auto_start: bool = False
     autonomous_scan_interval_sec: float = 90.0
     autonomous_symbol_cooldown_sec: float = 300.0
     autonomous_max_symbols_per_cycle: int = 15
