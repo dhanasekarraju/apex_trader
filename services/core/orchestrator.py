@@ -90,20 +90,23 @@ class TradingOrchestrator:
         """Pull equity/cash from Kite margins into Postgres portfolio state."""
         import time
 
-        from services.brokers.factory import get_broker
+        from services.brokers.kite import KiteBroker
+        from services.brokers.kite_auth import kite_auth
 
         if not self.cfg.sync_capital_from_kite:
             return {"skipped": "disabled"}
         if self.cfg.trading_mode != "live":
             return {"skipped": self.cfg.trading_mode}
+        if not self.cfg.kite_api_key.strip() or not self.cfg.kite_api_secret.strip():
+            return {"skipped": "kite_not_configured"}
+        if not kite_auth.get_access_token_sync():
+            return {"skipped": "kite_not_connected"}
         now = time.monotonic()
         if not force and (now - self._last_capital_sync) < self.cfg.capital_sync_interval_sec:
             return {"skipped": "throttled"}
-        broker = get_broker()
-        if broker.name != "kite":
-            return {"skipped": "not_kite_broker"}
+        broker = KiteBroker()
         if not await broker.connect():
-            return {"skipped": "kite_not_connected"}
+            return {"skipped": "kite_connect_failed"}
         funds = await broker.fetch_account_equity()
         if not funds.get("ok"):
             return funds
