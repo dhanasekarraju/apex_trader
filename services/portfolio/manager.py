@@ -173,10 +173,15 @@ class PortfolioManager:
         if equity <= 0:
             return {"ok": False, "reason": "invalid_equity"}
         previous = round(self.state.equity, 2)
+        previous_peak = round(self.state.peak_equity, 2)
         self.state.equity = round(equity, 2)
         self.state.cash = round(max(0.0, cash), 2)
-        if self.state.peak_equity < self.state.equity:
+        # Stale peak from wrong INITIAL_CAPITAL makes drawdown look ~100% → DANGER block.
+        if self.state.peak_equity > self.state.equity * 1.02:
             self.state.peak_equity = self.state.equity
+        elif self.state.peak_equity < self.state.equity:
+            self.state.peak_equity = self.state.equity
+        peak_reset = previous_peak != round(self.state.peak_equity, 2)
         await self.persist()
         from services.compliance.events import EventType
         from services.compliance.recorder import crce
@@ -199,5 +204,7 @@ class PortfolioManager:
             "previous_equity": previous,
             "equity": self.state.equity,
             "cash": self.state.cash,
+            "peak_equity": self.state.peak_equity,
+            "peak_reset": peak_reset,
             "source": "kite_margins",
         }
