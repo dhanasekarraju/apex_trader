@@ -6,7 +6,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libpq-dev gcc curl && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+# NumPy 2.x wheels need x86-64-v2; many cheap VPS CPUs only support baseline x86-64.
+RUN pip install --no-cache-dir "numpy>=1.26.4,<2.0.0" && \
+    pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
