@@ -3,11 +3,15 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from dataclasses import dataclass, field
 from typing import Any
 
 from services.control.reconciliation_state import is_reconciliation_degraded
 from shared.config import get_settings
+
+_SIGNALS_CACHE_TTL_SEC = 60.0
+_signals_cache: tuple[float, "SystemSignals"] | None = None
 
 
 @dataclass
@@ -18,7 +22,23 @@ class SystemSignals:
     issues: list[str] = field(default_factory=list)
 
 
+def invalidate_signals_cache() -> None:
+    global _signals_cache
+    _signals_cache = None
+
+
 async def collect_signals(context: dict[str, Any]) -> SystemSignals:
+    global _signals_cache
+    now = time.monotonic()
+    if _signals_cache and (now - _signals_cache[0]) < _SIGNALS_CACHE_TTL_SEC:
+        return _signals_cache[1]
+
+    signals = await _collect_signals_inner(context)
+    _signals_cache = (now, signals)
+    return signals
+
+
+async def _collect_signals_inner(context: dict[str, Any]) -> SystemSignals:
     cfg = get_settings()
     signals = SystemSignals()
     signals.reconciliation_degraded = await is_reconciliation_degraded()
@@ -42,7 +62,7 @@ async def collect_signals(context: dict[str, Any]) -> SystemSignals:
     try:
         from services.compliance.drift import DriftDetector
 
-        drifts = await asyncio.to_thread(DriftDetector().scan)
+        drifts = await asyncio.to_thread(DriftDetector().scan_recent, 800)
         signals.drift_count = len(drifts)
         if drifts:
             signals.issues.append(f"{len(drifts)} drift(s) detected")

@@ -144,9 +144,14 @@ class PortfolioManager:
         risk_budget = self.state.equity * self.cfg.max_risk_per_trade_pct / 100
         per_share_risk = abs(proposal.entry - proposal.stop_loss)
         qty = risk_budget / per_share_risk
-        max_capital = self.state.equity * 0.15
+        max_capital = self.state.equity * self._max_position_pct()
         max_qty = max_capital / proposal.entry
         return max(0, min(qty, max_qty))
+
+    def _max_position_pct(self) -> float:
+        if self.state.equity < 15_000:
+            return 0.28
+        return 0.15
 
     def metrics(self) -> dict:
         s = self.state

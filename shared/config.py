@@ -136,6 +136,8 @@ class Settings(BaseSettings):
     autonomous_universe_max_quotes: int = 120
     autonomous_universe_min_price: float = 50.0
     autonomous_universe_min_volume: int = 50_000
+    # 0 = no cap; set ~1400 for ₹4–5k accounts so scan targets affordable NSE names
+    autonomous_universe_max_price: float = 0.0
     watchlist_symbols: str = ""
     watchlist_file: str = "data/watchlist.yaml"
     enforce_sector_correlation_limits: bool = False
@@ -147,7 +149,7 @@ class Settings(BaseSettings):
     cors_allowed_origins: str = ""
 
     # Institutional Control Brain (ICB)
-    icb_timeout_sec: float = 5.0
+    icb_timeout_sec: float = 25.0
     icb_max_trades_per_hour: int = 20
     icb_trade_window_minutes: int = 60
     icb_drift_restrict_threshold: int = 1

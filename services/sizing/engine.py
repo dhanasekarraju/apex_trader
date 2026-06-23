@@ -79,8 +79,8 @@ class PositionSizingEngine:
             qty = risk_budget / per_share_risk
             detail = f"Fixed risk {max_risk_pct:.2f}%"
 
-        max_capital = inp.equity * 0.15
-        max_qty = max_capital / inp.entry
+        max_capital = inp.equity * self._max_position_pct(inp.equity)
+        max_qty = max_capital / inp.entry if inp.entry > 0 else 0
         capped = qty > max_qty
         qty = max(0, min(int(qty), int(max_qty)))
 
@@ -91,3 +91,9 @@ class PositionSizingEngine:
             qty, method.value, round(risk_pct, 3),
             round(risk_rs, 2), capped, detail,
         )
+
+    def _max_position_pct(self, equity: float) -> float:
+        """Small accounts need a higher cap to afford 1 share of liquid midcaps."""
+        if equity < 15_000:
+            return 0.28
+        return 0.15

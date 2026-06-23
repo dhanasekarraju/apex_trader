@@ -643,6 +643,19 @@ async def icb_clear_emergency():
     return await admin_clear_emergency_lock()
 
 
+@app.post("/api/icb/recover", dependencies=[Depends(require_api_auth)])
+async def icb_recover():
+    """Clear SAFE_MODE after a transient ICB timeout — does not clear kill switch."""
+    from services.icb.engine import icb
+    from services.icb.system_state import SystemState, get_system_state
+
+    state = await get_system_state()
+    if state not in (SystemState.SAFE_MODE, SystemState.ACTIVE):
+        return {"ok": False, "message": f"Cannot recover from {state.value}"}
+    await icb.recover_safe_mode()
+    return await icb.status({"portfolio": orch.portfolio, "trading_mode": get_settings().trading_mode})
+
+
 @app.post("/api/admin/reset-kill-switch", dependencies=[Depends(require_api_auth)])
 async def admin_reset_kill_switch():
     return await orch.admin_reset_kill_switch()

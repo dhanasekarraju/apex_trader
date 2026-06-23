@@ -51,12 +51,16 @@ class InstitutionalControlBrain:
                 timeout=self.cfg.icb_timeout_sec,
             )
         except asyncio.TimeoutError:
-            await self.enter_safe_mode("ICB authorization timeout")
+            audit("icb_authorize_timeout", action=action.value, timeout_sec=self.cfg.icb_timeout_sec)
+            state = await get_system_state()
             result = ICBResult(
                 ICBDecision.DENY,
-                "ICB timeout — SAFE_MODE engaged",
-                SystemState.SAFE_MODE,
-                crce_integrity="failed",
+                (
+                    f"ICB authorization timed out ({self.cfg.icb_timeout_sec:.0f}s) — "
+                    "retry; if persistent, increase ICB_TIMEOUT_SEC"
+                ),
+                state,
+                crce_integrity="unknown",
             )
         except Exception as exc:
             await self.enter_safe_mode(str(exc))

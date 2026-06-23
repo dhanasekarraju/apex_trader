@@ -16,7 +16,7 @@ _ROOT = Path(__file__).resolve().parents[2]
 EVENT_LOG = _ROOT / "data" / "compliance" / "event_log.jsonl"
 HASH_FILE = _ROOT / "data" / "compliance" / "last_hash.txt"
 GENESIS_HASH = "0" * 64
-_VERIFY_CACHE_TTL_SEC = 45.0
+_VERIFY_CACHE_TTL_SEC = 120.0
 _verify_cache: dict[str, tuple[float, dict[str, Any]]] = {}
 
 
