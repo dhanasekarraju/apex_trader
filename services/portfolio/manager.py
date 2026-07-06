@@ -173,7 +173,12 @@ class PortfolioManager:
             "trading_halted": self.is_trading_halted(),
         }
 
-    async def sync_capital_from_kite(self, equity: float, cash: float) -> dict:
+    async def sync_capital_from_kite(
+        self,
+        equity: float,
+        cash: float,
+        buying_power: float | None = None,
+    ) -> dict:
         """Update internal ledger from Zerodha margins — broker is source of truth for capital."""
         if equity <= 0:
             return {"ok": False, "reason": "invalid_equity"}
@@ -181,6 +186,8 @@ class PortfolioManager:
         previous_peak = round(self.state.peak_equity, 2)
         self.state.equity = round(equity, 2)
         self.state.cash = round(max(0.0, cash), 2)
+        bp = buying_power if buying_power and buying_power > 0 else equity
+        self.state.buying_power = round(max(bp, equity), 2)
         # Stale peak from wrong INITIAL_CAPITAL makes drawdown look ~100% → DANGER block.
         if self.state.peak_equity > self.state.equity * 1.02:
             self.state.peak_equity = self.state.equity
@@ -203,12 +210,14 @@ class PortfolioManager:
             previous=previous,
             equity=self.state.equity,
             cash=self.state.cash,
+            buying_power=self.state.buying_power,
         )
         return {
             "ok": True,
             "previous_equity": previous,
             "equity": self.state.equity,
             "cash": self.state.cash,
+            "buying_power": self.state.buying_power,
             "peak_equity": self.state.peak_equity,
             "peak_reset": peak_reset,
             "source": "kite_margins",

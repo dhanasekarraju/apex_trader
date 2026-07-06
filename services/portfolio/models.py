@@ -31,6 +31,8 @@ class PortfolioState:
     weekly_pnl: float = 0.0
     monthly_pnl: float = 0.0
     peak_equity: float = 0.0
+    # MIS intraday buying power from Kite margins (0 = use equity for position caps)
+    buying_power: float = 0.0
     consecutive_losses: int = 0
     emergency_halt: bool = False
     circuit_breaker: bool = False

@@ -21,6 +21,7 @@ class SizeInput:
     equity: float
     entry: float
     stop_loss: float
+    buying_power: float = 0.0
     atr: float = 0.0
     volatility_pct: float = 1.0
     win_rate: float = 0.5
@@ -79,10 +80,17 @@ class PositionSizingEngine:
             qty = risk_budget / per_share_risk
             detail = f"Fixed risk {max_risk_pct:.2f}%"
 
-        max_capital = inp.equity * self._max_position_pct(inp.equity)
+        max_capital = self._cap_basis(inp) * self._max_position_pct(self._cap_basis(inp))
         max_qty = max_capital / inp.entry if inp.entry > 0 else 0
         capped = qty > max_qty
         qty = max(0, min(int(qty), int(max_qty)))
+        cfg = get_settings()
+        if qty < 1 and cfg.trading_mode == "live":
+            qty = 1
+            detail += " · live try 1 share (broker confirms margin)"
+        elif qty < 1 and inp.equity < 15_000 and int(max_qty) >= 1:
+            qty = 1
+            detail += " · small-account min 1 share"
 
         risk_rs = qty * per_share_risk
         risk_pct = risk_rs / inp.equity * 100 if inp.equity else 0
@@ -91,6 +99,11 @@ class PositionSizingEngine:
             qty, method.value, round(risk_pct, 3),
             round(risk_rs, 2), capped, detail,
         )
+
+    def _cap_basis(self, inp: SizeInput) -> float:
+        """Position notional cap — MIS buying power can exceed cash (margin/leverage)."""
+        bp = inp.buying_power if inp.buying_power > inp.equity else inp.equity
+        return max(inp.equity, bp)
 
     def _max_position_pct(self, equity: float) -> float:
         """Small accounts need a higher cap to afford 1 share of liquid midcaps."""

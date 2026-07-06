@@ -143,6 +143,9 @@ class Settings(BaseSettings):
     enforce_sector_correlation_limits: bool = False
     sync_capital_from_kite: bool = True
     capital_sync_interval_sec: float = 300.0
+    # MIS: when Kite net ≈ cash, scale buying-power cap for position sizing (1 = off).
+    # Risk limits still use actual net/cash. Verify via GET /api/kite/margins first.
+    mis_sizing_leverage: float = 1.0
 
     # API security
     api_access_key: str = ""

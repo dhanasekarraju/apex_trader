@@ -66,16 +66,18 @@ class RegimeDetector:
 
         if vol > 45 or atr_pct > 5:
             regime = Regime.CRISIS if vol > 60 else Regime.HIGH_VOL
-        elif abs(trend) < 0.3 and vol < 15:
+        elif abs(trend) < 0.4 and vol < 22:
             regime = Regime.RANGE
-        elif trend > 0.8:
+        elif trend > 0.45:
             regime = Regime.TREND_UP
-        elif trend < -0.8:
+        elif trend < -0.45:
             regime = Regime.TREND_DOWN
         elif vol < 12:
             regime = Regime.LOW_VOL
+        elif vol >= 18:
+            regime = Regime.HIGH_VOL
         else:
-            regime = Regime.UNCLEAR
+            regime = Regime.RANGE
 
         strategies = self.STRATEGY_MAP.get(regime, [])
         trade_allowed = regime not in (Regime.CRISIS, Regime.UNCLEAR)

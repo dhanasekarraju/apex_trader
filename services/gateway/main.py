@@ -424,6 +424,20 @@ async def kite_status():
     return await kite_auth.get_status()
 
 
+@app.get("/api/kite/margins", dependencies=[Depends(require_api_auth)])
+async def kite_margins():
+    """Raw Kite margin breakdown — compare with Zerodha app Available / buying power."""
+    from services.brokers.kite import KiteBroker
+
+    broker = KiteBroker()
+    if not await broker.connect():
+        raise HTTPException(503, "Kite not connected")
+    funds = await broker.fetch_account_equity()
+    if not funds.get("ok"):
+        raise HTTPException(502, funds.get("error", "margins fetch failed"))
+    return funds
+
+
 @app.get("/api/kite/login")
 async def kite_login(api_key: str | None = Query(default=None)):
     """Browser OAuth start — accepts X-API-Key header or ?api_key= query (dashboard link)."""

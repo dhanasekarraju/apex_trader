@@ -36,7 +36,7 @@ class TrendFollowingStrategy(BaseStrategy):
     name = "trend_following"
 
     def generate(self, symbol: str, df: pd.DataFrame, regime: str) -> Signal | None:
-        if regime not in ("trend_up", "high_volatility"):
+        if regime not in ("trend_up", "high_volatility", "range"):
             return None
         close = df["close"].astype(float)
         if len(close) < 50:
@@ -72,7 +72,7 @@ class MomentumStrategy(BaseStrategy):
         if len(close) < 30:
             return None
         roc = (close.iloc[-1] / close.iloc[-10] - 1) * 100
-        if roc < 1.5:
+        if roc < 1.0:
             return None
         price = close.iloc[-1]
         sl = price * 0.985

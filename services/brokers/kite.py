@@ -368,7 +368,7 @@ class KiteBroker(BrokerAdapter):
         return count
 
     async def fetch_account_equity(self) -> dict:
-        """Pull live equity/cash from Kite margins (equity segment)."""
+        """Pull live equity/cash/buying-power from Kite margins (equity segment)."""
         if not self._kite and not await self.connect():
             return {"ok": False, "error": "not_connected"}
         try:
@@ -377,18 +377,41 @@ class KiteBroker(BrokerAdapter):
             eq = margins.get("equity") or {}
             net = float(eq.get("net") or 0)
             available = eq.get("available") or {}
-            cash = float(
-                available.get("live_balance")
-                or available.get("cash")
-                or available.get("opening_balance")
-                or net
-            )
-            if net <= 0:
+            cash = float(available.get("cash") or 0)
+            live_balance = float(available.get("live_balance") or 0)
+            collateral = float(available.get("collateral") or 0)
+            adhoc = float(available.get("adhoc_margin") or 0)
+            intraday_payin = float(available.get("intraday_payin") or 0)
+
+            liquid_cash = live_balance or cash or net
+            # Kite `net` = total margin available (cash + collateral + credits − debits).
+            buying_power = max(net, liquid_cash + collateral + adhoc + intraday_payin)
+
+            cfg = get_settings()
+            if (
+                cfg.kite_product.upper() == "MIS"
+                and cfg.mis_sizing_leverage > 1.0
+                and buying_power <= liquid_cash * 1.05
+            ):
+                buying_power = max(buying_power, liquid_cash * cfg.mis_sizing_leverage)
+
+            if net <= 0 and buying_power <= 0:
                 return {"ok": False, "error": "zero_equity", "raw": eq}
+
+            equity = net if net > 0 else buying_power
             return {
                 "ok": True,
-                "equity": round(net, 2),
-                "cash": round(max(0.0, cash), 2),
+                "equity": round(equity, 2),
+                "cash": round(max(0.0, liquid_cash), 2),
+                "buying_power": round(buying_power, 2),
+                "margins_detail": {
+                    "net": round(net, 2),
+                    "cash": round(cash, 2),
+                    "live_balance": round(live_balance, 2),
+                    "collateral": round(collateral, 2),
+                    "adhoc_margin": round(adhoc, 2),
+                    "intraday_payin": round(intraday_payin, 2),
+                },
                 "source": "kite_margins",
             }
         except Exception as exc:

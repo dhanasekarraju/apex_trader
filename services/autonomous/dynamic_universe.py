@@ -218,7 +218,6 @@ class DynamicUniverseSelector:
         quotes = await self.data.fetch_market_quotes(candidates)
         min_price = self.cfg.autonomous_universe_min_price
         min_volume = self.cfg.autonomous_universe_min_volume
-        max_price = self.cfg.autonomous_universe_max_price
 
         ranked: list[tuple[str, float]] = []
         for sym in candidates:
@@ -229,8 +228,6 @@ class DynamicUniverseSelector:
             vol = float(q.get("volume") or 0)
             if last < min_price or vol < min_volume:
                 continue
-            if max_price > 0 and last > max_price:
-                continue
             ranked.append((sym.upper(), trending_score(q)))
 
         ranked.sort(key=lambda x: x[1], reverse=True)
@@ -238,5 +235,13 @@ class DynamicUniverseSelector:
         if len(pool) < scan_size:
             extras = [s for s in _LIQUID_CANDIDATES if s not in pool]
             pool.extend(extras[: max(0, pool_size - len(pool))])
+
+        # Scan cheapest first — broker is final gate if margin insufficient.
+        price_by_sym: dict[str, float] = {}
+        for sym in pool:
+            q = quotes.get(sym.upper())
+            if q:
+                price_by_sym[sym.upper()] = float(q.get("last_price") or 0)
+        pool.sort(key=lambda s: price_by_sym.get(s.upper(), float("inf")))
         scan = pool[:scan_size]
         return pool, scan, "kite_trending"

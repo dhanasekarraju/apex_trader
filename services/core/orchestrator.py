@@ -22,7 +22,7 @@ from services.risk.engine import TradeProposal
 from services.risk.unified import UnifiedRiskEngine
 from services.sizing.engine import PositionSizingEngine, SizeInput, SizingMethod
 from services.strategy_lab.registry import StrategyLab
-from services.strategies.engine import StrategyEngine
+from services.strategies.engine import Signal, StrategyEngine
 from services.watchdog.service import WatchdogService
 from shared.config import get_settings
 from shared.logging import audit, trade_log
@@ -111,7 +111,11 @@ class TradingOrchestrator:
         if not funds.get("ok"):
             return funds
         self._last_capital_sync = now
-        return await self.portfolio.sync_capital_from_kite(funds["equity"], funds["cash"])
+        return await self.portfolio.sync_capital_from_kite(
+            funds["equity"],
+            funds["cash"],
+            funds.get("buying_power", funds["equity"]),
+        )
 
     async def refresh_control_cache(self) -> None:
         """Refresh Redis PnL + risk snapshots for live UI."""
@@ -210,9 +214,11 @@ class TradingOrchestrator:
         )
         top = rankings[0]
         sig = next(s for s in signals if s.strategy == top.strategy)
+        sig = await self._rebase_signal_to_ltp(symbol, sig)
 
         size_in = SizeInput(
             equity=self.portfolio.state.equity,
+            buying_power=self.portfolio.state.buying_power or self.portfolio.state.equity,
             entry=sig.entry,
             stop_loss=sig.stop_loss,
             volatility_pct=regime.volatility_pct,
@@ -342,8 +348,12 @@ class TradingOrchestrator:
                     )
                     await self.portfolio.record_fill(pos, confidence=top.ai_confidence)
             elif result.status.value == "rejected":
+                from services.brokers.messages import is_insufficient_balance
+
                 decision["action"] = "REJECTED"
                 decision["risk_reason"] = result.message
+                if is_insufficient_balance(result.message):
+                    decision["insufficient_balance"] = True
 
         audit("trade_decision", symbol=symbol, action=decision["action"])
         self.decisions.insert(0, decision)
@@ -386,6 +396,32 @@ class TradingOrchestrator:
         d = {"symbol": symbol, "action": "NO_TRADE", "reason": reason, "regime": regime}
         self.decisions.insert(0, d)
         return d
+
+    async def _rebase_signal_to_ltp(self, symbol: str, sig: Signal) -> Signal:
+        """Align entry/SL/TP to live LTP so pre-trade deviation checks pass."""
+        if self.cfg.trading_mode not in ("live", "paper", "shadow"):
+            return sig
+        if not self.data.has_real_data_configured():
+            return sig
+        ltps = await self.data.fetch_ltps([symbol])
+        ltp = ltps.get(symbol.upper(), 0.0)
+        if ltp <= 0 or sig.entry <= 0:
+            return sig
+        if abs(ltp - sig.entry) / sig.entry * 100 <= self.cfg.max_entry_deviation_pct:
+            return sig
+        ratio = ltp / sig.entry
+        return Signal(
+            symbol=sig.symbol,
+            strategy=sig.strategy,
+            side=sig.side,
+            entry=round(ltp, 4),
+            stop_loss=round(sig.stop_loss * ratio, 4),
+            take_profit=round(sig.take_profit * ratio, 4),
+            confidence=sig.confidence,
+            qty_suggestion=sig.qty_suggestion,
+            reasons=sig.reasons + [f"Rebased entry {sig.entry:.2f}→LTP {ltp:.2f}"],
+            timeframe=sig.timeframe,
+        )
 
     def run_backtest(self, symbol: str, strategy: str | None = None) -> dict:
         df = self.data.synthetic_ohlcv(symbol, bars=800)

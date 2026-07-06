@@ -152,7 +152,7 @@ class AutonomousEngine:
             await set_autonomous_status(status)
             return status
 
-        symbols = self._prioritize_symbols(
+        symbols = await self._prioritize_symbols(
             await self.watchlist.resolve_scan_symbols(self.orch.data)
         )
         if not symbols:
@@ -161,7 +161,7 @@ class AutonomousEngine:
             return status
 
         results: list[dict] = []
-        stats = {"scanned": 0, "buy": 0, "rejected": 0, "no_trade": 0, "errors": 0, "cooldown_skipped": 0}
+        stats = {"scanned": 0, "buy": 0, "rejected": 0, "no_trade": 0, "errors": 0, "cooldown_skipped": 0, "insufficient_skipped": 0}
 
         for symbol in symbols[: cfg.autonomous_max_symbols_per_cycle]:
             if self.orch.portfolio.is_trading_halted():
@@ -176,9 +176,16 @@ class AutonomousEngine:
             try:
                 decision = await self.orch.analyze_symbol(symbol)
                 action = decision.get("action", "NO_TRADE")
+                reason = decision.get("risk_reason") or decision.get("reason", "")
+                from services.brokers.messages import is_insufficient_balance
+
                 if action == "BUY":
                     stats["buy"] += 1
                     self._symbol_cooldown[symbol] = datetime.now(_IST)
+                elif action == "REJECTED" and is_insufficient_balance(reason):
+                    stats["insufficient_skipped"] += 1
+                    action = "SKIPPED"
+                    reason = f"Insufficient margin — {reason}"
                 elif action == "REJECTED":
                     stats["rejected"] += 1
                     self._symbol_cooldown[symbol] = datetime.now(_IST)
@@ -188,7 +195,7 @@ class AutonomousEngine:
                     {
                         "symbol": symbol,
                         "action": action,
-                        "reason": decision.get("risk_reason") or decision.get("reason", ""),
+                        "reason": reason,
                         "strategy": decision.get("strategy"),
                     }
                 )
@@ -280,10 +287,17 @@ class AutonomousEngine:
         h, m = value.split(":")
         return time(int(h), int(m))
 
-    def _prioritize_symbols(self, symbols: list[str]) -> list[str]:
-        """Open positions first (for exit monitoring context), then fresh symbols."""
+    async def _prioritize_symbols(self, symbols: list[str]) -> list[str]:
+        """Fresh symbols first, sorted by price low → high (broker skips if no margin)."""
         held = {p.symbol.upper() for p in self.orch.portfolio.state.positions}
         priority = [s for s in symbols if s not in held]
+        if not priority:
+            return priority
+        try:
+            ltps = await self.orch.data.fetch_ltps(priority)
+            priority.sort(key=lambda s: ltps.get(s.upper(), float("inf")))
+        except Exception:
+            pass
         return priority
 
     def _in_cooldown(self, symbol: str) -> bool:
