@@ -64,6 +64,48 @@ class AutonomousEngine:
         audit("autonomous_engine_started", mode=self.cfg.trading_mode)
         return {"ok": True, "running": True, "mode": self.cfg.trading_mode}
 
+    async def maybe_auto_start(self) -> None:
+        """Self-start at session open each day when AUTONOMOUS_AUTO_START=true.
+
+        Runs from the background loop so it recovers even if Kite connected
+        after boot or the box restarted overnight — no manual Start needed.
+        """
+        cfg = get_settings()
+        self.cfg = cfg
+        if not (cfg.autonomous_auto_start and cfg.autonomous_enabled):
+            return
+        if await is_autonomous_running():
+            return
+        if not self._in_session():
+            return
+        if self.orch.portfolio.is_trading_halted():
+            return
+        blockers = await self._start_blockers()
+        if blockers:
+            await self._auto_heal_chaos(blockers)
+            audit("autonomous_auto_start_blocked", blockers=blockers[:3])
+            return
+        result = await self.start()
+        if result.get("ok"):
+            audit("autonomous_auto_started", mode=cfg.trading_mode)
+        else:
+            audit("autonomous_auto_start_failed", blockers=result.get("blockers"))
+
+    async def _auto_heal_chaos(self, blockers: list[str]) -> None:
+        """If autonomous is blocked only by a stale/missing chaos report, refresh it."""
+        if self.cfg.trading_mode != "live":
+            return
+        if not any("chaos" in b.lower() for b in blockers):
+            return
+        from services.chaos.live_gate import ChaosLiveGate
+
+        if not ChaosLiveGate.rerun_recommended():
+            return
+        from services.chaos.auto import ensure_fresh_report
+
+        started = await ensure_fresh_report(quick=False)
+        audit("autonomous_chaos_auto_refresh", started=started, context="auto_start")
+
     async def stop(self) -> dict:
         from services.autonomous.state import set_autonomous_running
 
@@ -140,6 +182,16 @@ class AutonomousEngine:
 
             chaos_ok, chaos_blockers = ChaosLiveGate.check_for_live(require_full_suite=True)
             if not chaos_ok:
+                # Stale/missing report → auto-refresh in background and keep running.
+                if ChaosLiveGate.rerun_recommended():
+                    from services.chaos.auto import ensure_fresh_report
+
+                    started = await ensure_fresh_report(quick=False)
+                    audit("autonomous_chaos_auto_refresh", started=started, blockers=chaos_blockers[:2])
+                    status = {"skipped": "chaos_report_refreshing", "running": True}
+                    await set_autonomous_status(status)
+                    return status
+                # Genuine resilience failure → protect capital.
                 reason = chaos_blockers[0] if chaos_blockers else "Chaos gate invalid"
                 await icb.enter_safe_mode(f"Autonomous stopped — {reason}")
                 await self.stop()

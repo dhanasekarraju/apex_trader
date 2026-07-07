@@ -104,6 +104,40 @@ class ChaosLiveGate:
         )
 
     @staticmethod
+    def rerun_recommended() -> bool:
+        """True when the report is only stale/missing/incomplete (auto-fixable by
+        re-running), NOT a genuine resilience failure (low score / unsafe).
+
+        Genuine failures must stay blocked to protect capital.
+        """
+        report = ChaosLiveGate.load_report()
+        if report is None:
+            return True
+        approved, blockers = ChaosLiveGate.validate(report)
+        if approved:
+            return False
+        text = " ".join(blockers).lower()
+        genuine_failure = any(
+            marker in text
+            for marker in (
+                "classification must be",
+                "resilience score must be",
+                "safe_for_live_capital is false",
+            )
+        )
+        rerunnable = any(
+            marker in text
+            for marker in (
+                "expired",
+                "no chaos resilience report",
+                "not completed",
+                "requires",
+                "timestamp missing",
+            )
+        )
+        return rerunnable and not genuine_failure
+
+    @staticmethod
     def check(*, require_full_suite: bool = True) -> tuple[bool, list[str]]:
         """
         Validate chaos approval for non-live checks.

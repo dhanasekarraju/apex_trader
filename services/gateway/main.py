@@ -71,6 +71,7 @@ async def _autonomous_loop() -> None:
     cfg = get_settings()
     while True:
         try:
+            await orch.autonomous.maybe_auto_start()
             result = await orch.autonomous.tick()
             if result.get("skipped"):
                 audit("autonomous_tick_skipped", reason=result.get("skipped"))
@@ -133,8 +134,37 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         startup_errors.append(f"orchestrator_startup: {e}")
     ensure_background_loops()
+    _cfg = get_settings()
+    # Loud, unmissable banner of the EFFECTIVE mode this process actually resolved.
+    # If this says 'paper' while your .env says live, the container is stale —
+    # run: docker compose up -d --force-recreate api
+    audit(
+        "startup_trading_mode",
+        trading_mode=_cfg.trading_mode,
+        enable_live_execution=_cfg.enable_live_execution,
+        default_broker=_cfg.default_broker,
+        golive_approved=_cfg.golive_approved,
+    )
+    if _cfg.enable_live_execution and _cfg.trading_mode != "live":
+        audit(
+            "startup_mode_mismatch",
+            warning="ENABLE_LIVE_EXECUTION=true but TRADING_MODE is not 'live' — "
+            "container likely stale; recreate it (docker compose up -d --force-recreate api)",
+            trading_mode=_cfg.trading_mode,
+        )
     if get_settings().watchlist_mode == "dynamic":
         asyncio.create_task(_warmup_dynamic_universe())
+    # Self-heal a stale/missing chaos report so live trading isn't blocked at open.
+    try:
+        if get_settings().trading_mode == "live":
+            from services.chaos.live_gate import ChaosLiveGate
+
+            if ChaosLiveGate.rerun_recommended():
+                from services.chaos.auto import ensure_fresh_report
+
+                await ensure_fresh_report(quick=False)
+    except Exception as e:
+        startup_errors.append(f"chaos_autoheal: {e}")
     if startup_errors:
         audit("startup_degraded", errors=startup_errors)
     yield
