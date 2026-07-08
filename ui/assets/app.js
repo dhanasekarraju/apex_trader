@@ -186,17 +186,22 @@ async function disconnectKite() {
 
 async function loadDashboard() {
   try {
-    const [d, readiness] = await Promise.all([
+    const [d, readiness, broker] = await Promise.all([
       api('/api/dashboard'),
       api('/api/readiness'),
+      api('/api/kite/positions').catch(() => null),
     ]);
     const p = d.portfolio || {};
+    const brokerConnected = broker && Array.isArray(broker.positions);
     document.getElementById('mEquity').textContent = fmtRs(p.equity);
     const pnlEl = document.getElementById('mPnl');
-    pnlEl.textContent = (p.daily_pnl >= 0 ? '+' : '') + fmtRs(p.daily_pnl);
-    pnlEl.className = 'metric ' + (p.daily_pnl >= 0 ? 'green' : 'red');
+    const shownPnl = brokerConnected ? broker.total_pnl : p.daily_pnl;
+    pnlEl.textContent = (shownPnl >= 0 ? '+' : '') + fmtRs(shownPnl);
+    pnlEl.className = 'metric ' + (shownPnl >= 0 ? 'green' : 'red');
     document.getElementById('mDrawdown').textContent = fmt(p.drawdown_pct) + '%';
-    document.getElementById('mPositions').textContent = p.open_positions ?? 0;
+    document.getElementById('mPositions').textContent = brokerConnected
+      ? broker.open_positions
+      : (p.open_positions ?? 0);
     document.getElementById('mHeatSub').textContent = 'Portfolio heat ' + fmt(p.portfolio_heat_pct) + '%';
     document.getElementById('heatPill').textContent = 'Heat ' + fmt(p.portfolio_heat_pct) + '%';
     document.getElementById('modeSelect').value = d.mode || 'paper';
@@ -384,18 +389,24 @@ function renderTradeStream(events) {
 
 async function loadControlPanel() {
   try {
-    const [pnl, risk, trades, icb] = await Promise.all([
+    const [pnl, risk, trades, icb, broker] = await Promise.all([
       api('/api/risk/pnl/live'),
       api('/api/risk/status'),
       api('/api/risk/trades/recent?limit=20'),
       api('/api/icb/status').catch(() => ({})),
+      api('/api/kite/positions').catch(() => null),
     ]);
+
+    // In live mode the broker account is the source of truth for open positions
+    // (includes trades placed manually in Kite, not just bot trades).
+    const brokerConnected = broker && Array.isArray(broker.positions);
+    const effectivePortfolioPnl = brokerConnected ? broker.total_pnl : pnl.portfolio_pnl;
 
     const portPnl = document.getElementById('livePortfolioPnl');
     const dailyPnl = document.getElementById('liveDailyPnl');
     if (portPnl) {
-      portPnl.textContent = (pnl.portfolio_pnl >= 0 ? '+' : '') + fmtRs(pnl.portfolio_pnl);
-      portPnl.className = 'metric ' + (pnl.portfolio_pnl >= 0 ? 'green' : 'red');
+      portPnl.textContent = (effectivePortfolioPnl >= 0 ? '+' : '') + fmtRs(effectivePortfolioPnl);
+      portPnl.className = 'metric ' + (effectivePortfolioPnl >= 0 ? 'green' : 'red');
     }
     if (dailyPnl) {
       dailyPnl.textContent = (pnl.daily_pnl >= 0 ? '+' : '') + fmtRs(pnl.daily_pnl);
@@ -431,11 +442,23 @@ async function loadControlPanel() {
 
     const pnlPill = document.getElementById('livePnlPill');
     if (pnlPill) {
-      pnlPill.textContent = 'PnL ' + fmtRs(pnl.portfolio_pnl);
-      pnlPill.className = 'pill ' + (pnl.portfolio_pnl >= 0 ? 'live' : 'danger');
+      pnlPill.textContent = 'PnL ' + fmtRs(effectivePortfolioPnl);
+      pnlPill.className = 'pill ' + (effectivePortfolioPnl >= 0 ? 'live' : 'danger');
     }
 
-    renderPositions(pnl.positions || []);
+    if (brokerConnected && broker.positions.length) {
+      renderPositions(broker.positions.map(p => ({
+        symbol: p.symbol,
+        qty: p.qty,
+        avg_price: p.entry,
+        ltp: p.ltp,
+        unrealized_pnl: p.pnl,
+        strategy: '—',
+        source: 'kite',
+      })));
+    } else {
+      renderPositions(pnl.positions || []);
+    }
     renderTradeStream(trades.events || []);
 
     const analyzeBtn = document.querySelector('#symbolInput + .btn, .input-row .btn');

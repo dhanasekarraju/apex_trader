@@ -307,9 +307,13 @@ class KiteBroker(BrokerAdapter):
                     "symbol": pos.get("tradingsymbol", ""),
                     "qty": abs(qty),
                     "entry": float(pos.get("average_price") or 0),
+                    "ltp": float(pos.get("last_price") or 0),
                     "side": "long" if qty > 0 else "short",
                     "product": pos.get("product", ""),
                     "exchange": pos.get("exchange", ""),
+                    "pnl": round(float(pos.get("pnl") or 0), 2),
+                    "m2m": round(float(pos.get("m2m") or 0), 2),
+                    "value": round(float(pos.get("value") or 0), 2),
                 }
             )
         return out

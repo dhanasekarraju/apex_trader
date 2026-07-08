@@ -468,6 +468,25 @@ async def kite_margins():
     return funds
 
 
+@app.get("/api/kite/positions", dependencies=[Depends(require_api_auth)])
+async def kite_positions():
+    """Live open positions + P&L straight from Zerodha (includes manual trades)."""
+    from services.brokers.kite import KiteBroker
+
+    broker = KiteBroker()
+    if not await broker.connect():
+        raise HTTPException(503, "Kite not connected")
+    positions = await broker.fetch_open_positions()
+    total_pnl = round(sum(p.get("pnl", 0) for p in positions), 2)
+    total_value = round(sum(p.get("value", 0) for p in positions), 2)
+    return {
+        "positions": positions,
+        "open_positions": len(positions),
+        "total_pnl": total_pnl,
+        "total_value": total_value,
+    }
+
+
 @app.get("/api/kite/login")
 async def kite_login(api_key: str | None = Query(default=None)):
     """Browser OAuth start — accepts X-API-Key header or ?api_key= query (dashboard link)."""
