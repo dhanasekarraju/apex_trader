@@ -43,6 +43,10 @@ class AutonomousEngine:
         from services.icb.actions import ICBAction
         from services.icb.engine import icb
 
+        # Always resolve the CURRENT settings so a manual start can never run on a
+        # stale (e.g. paper) snapshot captured at import time.
+        self.cfg = get_settings()
+
         blockers = await self._start_blockers()
         if blockers:
             return {"ok": False, "running": False, "blockers": blockers}
@@ -264,6 +268,7 @@ class AutonomousEngine:
         self._last_cycle_at = datetime.now(_IST)
         status = {
             "running": True,
+            "mode": cfg.trading_mode,
             "last_cycle_at": self._last_cycle_at.isoformat(),
             "stats": stats,
             "recent": results[-10:],

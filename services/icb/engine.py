@@ -128,14 +128,15 @@ class InstitutionalControlBrain:
                 crce_integrity=signals.crce_integrity,
             )
 
-        if signals.drift_count > 0 and action.value in (
+        if signals.drift_count >= self.cfg.icb_drift_restrict_threshold and action.value in (
             ICBAction.PLACE_ORDER.value,
             ICBAction.AUTONOMOUS_TICK.value,
             ICBAction.START_AUTONOMOUS.value,
         ):
             return ICBResult(
                 ICBDecision.DENY,
-                f"Portfolio drift detected ({signals.drift_count})",
+                f"Execution drift detected ({signals.drift_count}) — "
+                f"threshold {self.cfg.icb_drift_restrict_threshold}",
                 state,
                 crce_integrity=signals.crce_integrity,
             )

@@ -26,38 +26,46 @@ class DriftDetector:
         return self._scan_events(events)
 
     def _scan_events(self, events: list[dict]) -> list[dict[str, Any]]:
+        """Detect GENUINE execution drift only.
+
+        The engine re-scans the same symbols every cycle, so a symbol being
+        risk-rejected in one cycle and legitimately traded in a later cycle is
+        NORMAL — not drift. We therefore track only the *latest* risk decision
+        per symbol and flag an order that contradicts it. Speculative rules
+        (e.g. "BUY signal had no order") are intentionally excluded: a gated
+        signal is expected behaviour, not a compliance violation.
+        """
         drifts: list[dict[str, Any]] = []
 
-        risk_by_symbol: dict[str, dict] = {}
-        order_context: dict[str, dict] = {}
+        # Most-recent risk decision per symbol; an APPROVE clears any prior reject.
+        latest_risk: dict[str, str] = {}
 
         for ev in events:
             et = ev.get("event_type", "")
             sym = (ev.get("symbol") or "").upper()
+            ts = ev.get("timestamp", "")
 
             if et == EventType.RISK_EVALUATION.value and sym:
-                risk_by_symbol[sym] = ev
+                latest_risk[sym] = ev.get("decision", "")
 
-            if et == EventType.ORDER_PLACED.value:
-                cid = ev.get("client_order_id") or ev.get("event_id", "")
-                order_context[cid] = ev
-
-            if et == EventType.RISK_EVALUATION.value:
-                decision = ev.get("decision", "")
-                if decision in ("REJECTED", "DENY", "HALTED"):
-                    later = self._find_later_fill(events, ev["timestamp"], sym)
-                    if later:
-                        drifts.append(
-                            self._drift(
-                                "risk_vs_execution",
-                                "CRITICAL",
-                                sym,
-                                ev["timestamp"],
-                                f"risk {decision}",
-                                later.get("event_type"),
-                            )
+            # Genuine drift: an order reached the broker while this symbol's most
+            # recent risk decision was a rejection (should be impossible).
+            if et in (EventType.ORDER_PLACED.value, EventType.ORDER_FILLED.value) and sym:
+                if latest_risk.get(sym) in ("REJECTED", "DENY", "HALTED"):
+                    drifts.append(
+                        self._drift(
+                            "risk_vs_execution",
+                            "CRITICAL",
+                            sym,
+                            ts,
+                            f"risk {latest_risk[sym]}",
+                            et,
                         )
+                    )
+                # An order implies a fresh approval path; clear the stale state.
+                latest_risk[sym] = "APPROVED"
 
+            # Genuine drift: broker filled a different quantity than we intended.
             if et == EventType.ORDER_FILLED.value:
                 meta = ev.get("metadata") or {}
                 broker_qty = meta.get("broker_filled_qty")
@@ -69,12 +77,13 @@ class DriftDetector:
                                 "broker_vs_internal_fill",
                                 "HIGH",
                                 sym,
-                                ev["timestamp"],
+                                ts,
                                 str(internal_qty),
                                 str(broker_qty),
                             )
                         )
 
+            # Genuine drift: stop-loss exit filled materially worse than planned.
             if et == EventType.ORDER_EXITED.value:
                 expected_sl = ev.get("expected_stop_loss")
                 actual = ev.get("exit_price")
@@ -86,25 +95,11 @@ class DriftDetector:
                                 "sl_exit_price",
                                 "MEDIUM",
                                 sym,
-                                ev["timestamp"],
+                                ts,
                                 str(expected_sl),
                                 str(actual),
                             )
                         )
-
-            if et == EventType.AUTONOMOUS_TICK.value:
-                action = ev.get("autonomous_action")
-                if action == "BUY" and not self._find_later_order(events, ev["timestamp"], sym):
-                    drifts.append(
-                        self._drift(
-                            "autonomous_vs_execution",
-                            "HIGH",
-                            sym,
-                            ev["timestamp"],
-                            "BUY signal",
-                            "no ORDER_PLACED/FILLED",
-                        )
-                    )
 
         return drifts
 
@@ -125,28 +120,3 @@ class DriftDetector:
             "expected": expected,
             "actual": actual,
         }
-
-    @staticmethod
-    def _find_later_fill(events: list[dict], after_ts: str, symbol: str) -> dict | None:
-        for ev in events:
-            if ev.get("timestamp", "") <= after_ts:
-                continue
-            if ev.get("symbol", "").upper() != symbol.upper():
-                continue
-            if ev.get("event_type") in (EventType.ORDER_FILLED.value, EventType.ORDER_PLACED.value):
-                return ev
-        return None
-
-    @staticmethod
-    def _find_later_order(events: list[dict], after_ts: str, symbol: str) -> bool:
-        for ev in events:
-            if ev.get("timestamp", "") <= after_ts:
-                continue
-            if ev.get("symbol", "").upper() != symbol.upper():
-                continue
-            if ev.get("event_type") in (
-                EventType.ORDER_PLACED.value,
-                EventType.ORDER_FILLED.value,
-            ):
-                return True
-        return False

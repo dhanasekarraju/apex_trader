@@ -142,6 +142,40 @@ def test_drift_risk_vs_execution(store):
     assert any(d["drift_type"] == "risk_vs_execution" for d in drifts)
 
 
+def test_no_drift_when_rejection_followed_by_fresh_approval(store):
+    """Re-scanning the same symbol: reject one cycle, approve+fill later.
+
+    This is normal autonomous behaviour and must NOT be flagged as drift.
+    Regression test for the false positive that halted live trading.
+    """
+    store.append(
+        build_event(
+            event_type=EventType.RISK_EVALUATION,
+            symbol="RELIANCE",
+            decision="REJECTED",
+            timestamp="2026-06-14T10:00:00+00:00",
+        )
+    )
+    store.append(
+        build_event(
+            event_type=EventType.RISK_EVALUATION,
+            symbol="RELIANCE",
+            decision="APPROVED",
+            timestamp="2026-06-14T10:05:00+00:00",
+        )
+    )
+    store.append(
+        build_event(
+            event_type=EventType.ORDER_FILLED,
+            symbol="RELIANCE",
+            decision="EXECUTED",
+            timestamp="2026-06-14T10:05:01+00:00",
+        )
+    )
+    drifts = DriftDetector(store).scan()
+    assert not any(d["drift_type"] == "risk_vs_execution" for d in drifts)
+
+
 def test_drift_broker_vs_internal(store):
     store.append(
         build_event(

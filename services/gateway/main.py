@@ -76,7 +76,7 @@ async def _autonomous_loop() -> None:
             if result.get("skipped"):
                 audit("autonomous_tick_skipped", reason=result.get("skipped"))
             elif result.get("stats"):
-                audit("autonomous_tick_done", **result.get("stats", {}))
+                audit("autonomous_tick_done", mode=result.get("mode"), **result.get("stats", {}))
         except Exception as e:
             audit("autonomous_tick_failed", error=str(e))
         await asyncio.sleep(cfg.autonomous_scan_interval_sec)
