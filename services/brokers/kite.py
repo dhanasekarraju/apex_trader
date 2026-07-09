@@ -210,16 +210,40 @@ class KiteBroker(BrokerAdapter):
 
     async def _submit_order(self, params: dict) -> str:
         loop = asyncio.get_event_loop()
-        if self.cfg.kite_autoslice:
-            resp = await loop.run_in_executor(
-                None, partial(self._kite.place_autoslice_order, **params)
-            )
-            if isinstance(resp, dict):
-                return str(resp.get("order_id", ""))
-            return str(resp)
+        # Auto-slice only when explicitly enabled AND the order is large enough to
+        # exceed an exchange freeze limit (F&O). Regular equity orders cannot be
+        # auto-sliced ("cannot autoslice this instrument"), so we fall back.
+        use_slice = (
+            self.cfg.kite_autoslice
+            and int(params.get("quantity", 0)) >= self.cfg.kite_autoslice_min_qty
+            and hasattr(self._kite, "place_autoslice_order")
+        )
+        if use_slice:
+            try:
+                resp = await loop.run_in_executor(
+                    None, partial(self._kite.place_autoslice_order, **params)
+                )
+                return self._extract_order_id(resp)
+            except Exception as e:
+                if "autoslice" in str(e).lower() or "slice" in str(e).lower():
+                    audit("kite_autoslice_fallback", symbol=params.get("tradingsymbol"), error=str(e))
+                else:
+                    raise
         resp = await loop.run_in_executor(
             None, partial(self._kite.place_order, **params)
         )
+        return self._extract_order_id(resp)
+
+    @staticmethod
+    def _extract_order_id(resp) -> str:
+        """Kite returns an order_id string, a dict, or (auto-slice) a list of them."""
+        if isinstance(resp, dict):
+            return str(resp.get("order_id", ""))
+        if isinstance(resp, (list, tuple)) and resp:
+            first = resp[0]
+            if isinstance(first, dict):
+                return str(first.get("order_id", ""))
+            return str(first)
         return str(resp)
 
     async def cancel_order(self, broker_order_id: str) -> bool:

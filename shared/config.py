@@ -71,7 +71,11 @@ class Settings(BaseSettings):
     kite_market_protection: int = -1
     kite_exchange: str = "NSE"
     kite_product: str = "MIS"  # intraday equity default
-    kite_autoslice: bool = True  # split at exchange freeze limits
+    # Auto-slice (iceberg) is ONLY for large F&O orders above the exchange freeze
+    # quantity. Regular cash-equity orders raise "cannot autoslice this instrument".
+    # Keep OFF for normal equity trading; the broker also falls back automatically.
+    kite_autoslice: bool = False  # split at exchange freeze limits (F&O large orders only)
+    kite_autoslice_min_qty: int = 1000  # only slice when qty exceeds this (freeze-limit orders)
     kite_static_ip_confirmed: bool = False  # set true after registering server IP on Kite dev console
     ib_host: str = "127.0.0.1"
     ib_port: int = 7497
