@@ -201,12 +201,19 @@ class KiteBroker(BrokerAdapter):
             "tag": req.client_order_id[:20],
         }
         if req.order_type in (OrderType.LIMIT, OrderType.STOP_LIMIT) and req.limit_price:
-            params["price"] = req.limit_price
+            params["price"] = self._round_tick(req.limit_price)
         if req.order_type in (OrderType.STOP, OrderType.STOP_LIMIT) and req.stop_price:
-            params["trigger_price"] = req.stop_price
+            params["trigger_price"] = self._round_tick(req.stop_price)
         if order_type in (self._kite.ORDER_TYPE_MARKET, self._kite.ORDER_TYPE_SLM):
             params["market_protection"] = self._market_protection()
         return params
+
+    def _round_tick(self, price: float) -> float:
+        """Snap a price to a valid NSE tick multiple — Kite rejects off-tick prices."""
+        tick = self.cfg.kite_tick_size or 0.05
+        if tick <= 0 or price <= 0:
+            return round(price, 2)
+        return round(round(price / tick) * tick, 2)
 
     async def _submit_order(self, params: dict) -> str:
         loop = asyncio.get_event_loop()

@@ -47,6 +47,19 @@ def test_stop_uses_slm_with_protection():
     assert params["market_protection"] == -1
 
 
+def test_offtick_stop_price_snapped_to_tick():
+    """Kite rejects off-tick trigger prices; broker must round to a valid tick."""
+    broker = KiteBroker()
+    broker._kite = _FakeKite()
+    req = OrderRequest(
+        "ONGC", "short", 5, OrderType.STOP, stop_price=245.6789,
+    )
+    params = broker._build_params(req, 5)
+    trigger = params["trigger_price"]
+    assert abs(round(trigger / 0.05) * 0.05 - trigger) < 1e-9
+    assert trigger == 245.7
+
+
 def test_limit_order_has_no_market_protection():
     broker = KiteBroker()
     broker._kite = _FakeKite()
