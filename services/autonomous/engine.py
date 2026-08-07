@@ -195,7 +195,11 @@ class AutonomousEngine:
             "updated_at": cached.get("updated_at") if cached else None,
         }
         if cached:
-            base.update(cached)
+            # Cached tick payload must not clobber the live Redis running flag
+            # (a prior not_running tick used to force running=false in the UI).
+            merged = {k: v for k, v in cached.items() if k != "running"}
+            base.update(merged)
+            base["running"] = running
         return base
 
     async def tick(self) -> dict:

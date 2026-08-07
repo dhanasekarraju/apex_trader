@@ -519,6 +519,7 @@ async def kite_callback(
     try:
         await kite_auth.complete_login(request_token)
         orch.data._real_data_ok = None
+        orch.execution.refresh_broker()
         await orch.execution.connect()
         await orch.sync_capital_from_kite(force=True)
         return RedirectResponse(_app_url("/?kite=connected"))
@@ -535,6 +536,7 @@ async def kite_disconnect():
     await kite_auth.disconnect()
     orch.data._real_data_ok = None
     await orch.execution.disconnect()
+    orch.execution.refresh_broker()
     return {"ok": True, "message": "Kite session cleared"}
 
 

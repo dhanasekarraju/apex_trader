@@ -30,9 +30,12 @@ class KiteBroker(BrokerAdapter):
     async def connect(self) -> bool:
         token = kite_auth.get_access_token_sync()
         if not self.cfg.kite_api_key or not token:
+            self._connected = False
+            self._kite = None
             return False
         try:
             from kiteconnect import KiteConnect
+            # Always rebuild client so a fresh OAuth token replaces a stale one
             self._kite = KiteConnect(api_key=self.cfg.kite_api_key)
             self._kite.set_access_token(token)
             await asyncio.get_event_loop().run_in_executor(None, self._kite.profile)
@@ -41,6 +44,7 @@ class KiteBroker(BrokerAdapter):
         except Exception as e:
             audit("kite_connect_failed", error=str(e))
             self._connected = False
+            self._kite = None
             return False
 
     async def disconnect(self) -> None:

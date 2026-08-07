@@ -52,7 +52,11 @@ class ExecutionEngine:
         self._market_data = market_data
 
     def refresh_broker(self) -> None:
+        from services.brokers.factory import reset_broker_cache
+
+        reset_broker_cache()
         self._broker = get_broker()
+        self.cfg = get_settings()
 
     async def connect(self) -> bool:
         if self.cfg.trading_mode == "shadow":
