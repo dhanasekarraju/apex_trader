@@ -1,4 +1,12 @@
-const API = window.APEX_BASE || '';
+function resolveApexBase() {
+  if (window.APEX_BASE) return String(window.APEX_BASE).replace(/\/$/, '');
+  // Domain deploy under /apex/ with empty APP_BASE_PATH still needs prefixed API calls
+  const p = window.location.pathname || '';
+  if (p === '/apex' || p.startsWith('/apex/')) return '/apex';
+  return '';
+}
+
+const API = resolveApexBase();
 const API_KEY = window.APEX_API_KEY || '';
 
 function authHeaders(extra = {}) {
@@ -121,8 +129,9 @@ function renderJournal(j) {
 
 function kiteConnectHref(status) {
   if (status?.login_url) return status.login_url;
-  if (API_KEY) return `${API}/api/kite/login?api_key=${encodeURIComponent(API_KEY)}`;
-  return '#';
+  const login = `${API}/api/kite/login`;
+  if (API_KEY) return `${login}?api_key=${encodeURIComponent(API_KEY)}`;
+  return login;
 }
 
 async function loadKiteStatus() {
@@ -153,13 +162,13 @@ async function loadKiteStatus() {
       disconnectBtn.style.display = s.connected ? 'inline-block' : 'none';
     }
   } catch (e) {
-    panel.textContent = 'Unable to load Kite session status';
+    panel.textContent = 'Unable to load Kite session status — try Connect anyway, or set APP_BASE_PATH=/apex';
     pill.textContent = 'Kite —';
     pill.className = 'pill danger';
     if (connectBtn) {
       connectBtn.style.display = 'inline-block';
       connectBtn.removeAttribute('aria-disabled');
-      connectBtn.href = '#';
+      connectBtn.href = kiteConnectHref(null);
     }
   }
 }
@@ -174,7 +183,7 @@ function handleKiteQueryParams() {
     const reason = params.get('reason') || 'unknown';
     alert('Kite login failed: ' + decodeURIComponent(reason));
   }
-  window.history.replaceState({}, '', (window.APEX_BASE || '') + '/');
+  window.history.replaceState({}, '', API + '/');
 }
 
 async function disconnectKite() {
