@@ -19,3 +19,5 @@ data/chaos/reports/
 data/journal/
 data/shadow/
 !data/watchlist.yaml
+
+!.env.example
