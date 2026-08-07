@@ -90,6 +90,7 @@ class KiteBroker(BrokerAdapter):
             )
         loop = asyncio.get_event_loop()
         deadline = time.monotonic() + timeout_sec
+        last_partial: OrderResult | None = None
         while time.monotonic() < deadline:
             try:
                 history = await loop.run_in_executor(
@@ -97,19 +98,48 @@ class KiteBroker(BrokerAdapter):
                 )
                 if history:
                     last = history[-1]
-                    status = last.get("status", "")
-                    if status == "COMPLETE":
+                    status = str(last.get("status", "") or "").upper()
+                    filled = float(last.get("filled_quantity", 0) or 0)
+                    avg = float(last.get("average_price", 0) or 0)
+                    qty_req = float(last.get("quantity", req.qty) or req.qty)
+                    pending = float(
+                        last.get("pending_quantity", max(0.0, qty_req - filled)) or 0
+                    )
+                    if status == "COMPLETE" or (filled > 0 and pending <= 0):
                         return OrderResult(
                             req.client_order_id,
                             broker_order_id,
                             OrderStatus.FILLED,
-                            float(last.get("filled_quantity", 0)),
-                            float(last.get("average_price", 0)),
+                            filled,
+                            avg,
                             0,
                             "Fill confirmed",
                             raw=last,
                         )
+                    if filled > 0 and status not in ("CANCELLED", "REJECTED"):
+                        # OPEN / TRIGGER PENDING with partial qty — keep polling
+                        last_partial = OrderResult(
+                            req.client_order_id,
+                            broker_order_id,
+                            OrderStatus.PARTIAL,
+                            filled,
+                            avg,
+                            0,
+                            f"Partial fill {filled}/{qty_req} ({status})",
+                            raw=last,
+                        )
                     if status in ("CANCELLED", "REJECTED"):
+                        if filled > 0:
+                            return OrderResult(
+                                req.client_order_id,
+                                broker_order_id,
+                                OrderStatus.PARTIAL,
+                                filled,
+                                avg,
+                                0,
+                                f"Order {status.lower()} after partial fill {filled}",
+                                raw=last,
+                            )
                         return OrderResult(
                             req.client_order_id,
                             broker_order_id,
@@ -123,6 +153,13 @@ class KiteBroker(BrokerAdapter):
             except Exception as e:
                 audit("kite_reconcile_error", order_id=broker_order_id, error=str(e))
             await asyncio.sleep(0.5)
+        if last_partial is not None:
+            audit(
+                "kite_reconcile_partial_timeout",
+                order_id=broker_order_id,
+                filled=last_partial.filled_qty,
+            )
+            return last_partial
         return OrderResult(
             req.client_order_id, broker_order_id, OrderStatus.FAILED,
             0, 0, 0, "Reconciliation timeout",

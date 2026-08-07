@@ -36,7 +36,52 @@ class AutonomousEngine:
         self.watchlist = WatchlistProvider()
         self._symbol_cooldown: dict[str, datetime] = {}
         self._last_cycle_at: datetime | None = None
+        self._last_square_off_day: str = ""
         self._running = False
+
+    async def maybe_eod_square_off(self) -> dict | None:
+        """Once per IST day after mis_square_off_time, flatten MIS book.
+
+        Runs even when autonomous scanning is stopped, so leftover positions
+        are not left to broker auto square-off alone.
+        """
+        cfg = get_settings()
+        self.cfg = cfg
+        if not cfg.mis_square_off_enabled:
+            return None
+        now = datetime.now(_IST)
+        if now.weekday() >= 5:
+            return None
+        cutoff = self._parse_time(cfg.mis_square_off_time)
+        if now.time() < cutoff:
+            return None
+        day_key = now.strftime("%Y-%m-%d")
+        if self._last_square_off_day == day_key:
+            return None
+
+        open_n = len(self.orch.portfolio.state.positions)
+        # Always mark the day so we don't spam; still flatten if anything open
+        # or broker may hold inventory (live/paper).
+        if open_n <= 0 and cfg.trading_mode == "shadow":
+            self._last_square_off_day = day_key
+            return {"skipped": "shadow_flat", "day": day_key}
+
+        await self.stop()
+        result = await self.orch.execution.eod_square_off(
+            reason=f"mis_eod_square_off@{cfg.mis_square_off_time}_IST"
+        )
+        self._last_square_off_day = day_key
+        try:
+            await self.orch.alerts.send(
+                "MIS EOD SQUARE-OFF",
+                f"flattened={result.get('flattened')} cancelled={result.get('cancelled')} "
+                f"accounted={result.get('accounted')} @ {cfg.mis_square_off_time} IST",
+                "warning",
+            )
+        except Exception:
+            pass
+        audit("mis_eod_square_off_done", **result, day=day_key, had_open=open_n)
+        return result
 
     async def start(self) -> dict:
         from services.autonomous.state import set_autonomous_running

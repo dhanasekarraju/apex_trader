@@ -137,6 +137,12 @@ class Settings(BaseSettings):
     autonomous_inter_symbol_delay_sec: float = 1.5
     autonomous_session_start: str = "09:20"
     autonomous_session_end: str = "15:15"
+    # Force MIS flatten at/after this IST time (once per day). Keep ≤ session_end.
+    mis_square_off_enabled: bool = True
+    mis_square_off_time: str = "15:15"
+    # Refuse orders whose risk exceeds this multiple of max_risk_per_trade_pct
+    # (blocks live 1-share floors that would breach the risk budget).
+    sizing_risk_breach_tolerance: float = 1.01
     # static = data/watchlist.yaml | dynamic = Kite trending pool daily
     watchlist_mode: str = "dynamic"
     autonomous_universe_pool_size: int = 50

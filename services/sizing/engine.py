@@ -85,15 +85,44 @@ class PositionSizingEngine:
         capped = qty > max_qty
         qty = max(0, min(int(qty), int(max_qty)))
         cfg = get_settings()
-        if qty < 1 and cfg.trading_mode == "live":
-            qty = 1
-            detail += " · live try 1 share (broker confirms margin)"
-        elif qty < 1 and inp.equity < 15_000 and int(max_qty) >= 1:
-            qty = 1
-            detail += " · small-account min 1 share"
+        tol = max(1.0, float(cfg.sizing_risk_breach_tolerance or 1.01))
+
+        def _risk_ok(q: int) -> bool:
+            if q <= 0 or inp.equity <= 0:
+                return False
+            return (q * per_share_risk) / inp.equity * 100 <= max_risk_pct * tol
+
+        if qty < 1:
+            # Never force a live 1-share lot that breaches the risk budget.
+            if (
+                cfg.trading_mode != "live"
+                and inp.equity < 15_000
+                and int(max_qty) >= 1
+                and _risk_ok(1)
+            ):
+                qty = 1
+                detail += " · small-account min 1 share (within risk)"
+            else:
+                return SizeResult(
+                    0,
+                    method.value,
+                    0,
+                    0,
+                    capped,
+                    detail + " · qty<1 after risk budget — skip (no unsafe 1-share override)",
+                )
 
         risk_rs = qty * per_share_risk
         risk_pct = risk_rs / inp.equity * 100 if inp.equity else 0
+        if risk_pct > max_risk_pct * tol:
+            return SizeResult(
+                0,
+                method.value,
+                round(risk_pct, 3),
+                round(risk_rs, 2),
+                True,
+                f"{detail} · risk {risk_pct:.2f}% > limit {max_risk_pct:.2f}% — skip",
+            )
 
         return SizeResult(
             qty, method.value, round(risk_pct, 3),

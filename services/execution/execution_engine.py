@@ -599,6 +599,45 @@ class ExecutionEngine:
         except Exception:
             return fallback
 
+    async def eod_square_off(self, reason: str = "mis_eod_square_off") -> dict:
+        """Flatten open book at MIS cutoff without latching the kill switch.
+
+        Stops new entries for the day via autonomous stop (caller), cancels
+        open orders, flattens positions, and accounts exits in the portfolio.
+        """
+        positions = list(self._portfolio.state.positions) if self._portfolio else []
+        cancelled = await self.cancel_all()
+        flattened = await self.flatten_all()
+        accounted = 0
+        if self._portfolio:
+            for pos in positions:
+                exit_price = await self._resolve_flatten_price(pos.symbol, pos.entry)
+                pnl = (exit_price - pos.entry) * pos.qty
+                await self._portfolio.record_exit(
+                    symbol=pos.symbol,
+                    exit_price=exit_price,
+                    exit_reason=reason,
+                    pnl=pnl,
+                )
+                accounted += 1
+            if self._portfolio.state.positions:
+                await self._portfolio.clear_after_flatten()
+            await self._portfolio.persist()
+        audit(
+            "mis_eod_square_off",
+            cancelled=cancelled,
+            flattened=flattened,
+            accounted=accounted,
+            reason=reason,
+        )
+        return {
+            "ok": True,
+            "cancelled": cancelled,
+            "flattened": flattened,
+            "accounted": accounted,
+            "reason": reason,
+        }
+
     async def flatten_all(self) -> int:
         if self.cfg.trading_mode == "shadow":
             audit("flatten_skipped_shadow")

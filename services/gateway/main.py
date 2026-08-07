@@ -71,6 +71,10 @@ async def _autonomous_loop() -> None:
     cfg = get_settings()
     while True:
         try:
+            # Always run EOD flatten check (even if scanning is stopped)
+            eod = await orch.autonomous.maybe_eod_square_off()
+            if eod:
+                audit("autonomous_eod_square_off", **{k: eod[k] for k in eod if k != "reason"})
             await orch.autonomous.maybe_auto_start()
             result = await orch.autonomous.tick()
             if result.get("skipped"):
