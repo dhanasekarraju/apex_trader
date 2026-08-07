@@ -2,15 +2,18 @@ services:
   postgres:
     image: postgres:16-alpine
     container_name: apex_trader_postgres
-    restart: always
+    restart: unless-stopped
     environment:
       POSTGRES_USER: apex
-      POSTGRES_PASSWORD: apex
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-apex}
       POSTGRES_DB: apex_trader
     volumes:
       - pgdata:/var/lib/postgresql/data
+    # Host 5439 — avoids rubaih :5433 and greeks :5438 (and system :5432)
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5439:5432"
+    networks:
+      - apex_net
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U apex -d apex_trader"]
       interval: 5s
@@ -21,9 +24,13 @@ services:
   redis:
     image: redis:7-alpine
     container_name: apex_trader_redis
-    restart: always
+    restart: unless-stopped
+    # Host 6389 — avoids rubaih :6380 and greeks :6388 (and system :6379)
+    command: redis-server --appendonly yes --bind 0.0.0.0 --protected-mode no
     ports:
-      - "6379:6379"
+      - "127.0.0.1:6389:6379"
+    networks:
+      - apex_net
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
@@ -34,15 +41,17 @@ services:
   api:
     build: .
     container_name: apex_trader_api
-    restart: always
+    restart: unless-stopped
+    # Host 8090 — rubaih nginx is :8080, greeks nginx is :8088
     ports:
-      - "8080:8080"
+      - "8090:8080"
     env_file:
       - .env
     environment:
-      DATABASE_URL: postgresql+asyncpg://apex:apex@postgres:5432/apex_trader
-      DATABASE_URL_SYNC: postgresql://apex:apex@postgres:5432/apex_trader
+      DATABASE_URL: postgresql+asyncpg://apex:${POSTGRES_PASSWORD:-apex}@postgres:5432/apex_trader
+      DATABASE_URL_SYNC: postgresql://apex:${POSTGRES_PASSWORD:-apex}@postgres:5432/apex_trader
       REDIS_URL: redis://redis:6379/0
+      API_PORT: "8080"
     volumes:
       - ./data:/app/data
     depends_on:
@@ -50,6 +59,8 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+    networks:
+      - apex_net
     healthcheck:
       test: ["CMD-SHELL", "curl -sf http://127.0.0.1:8080/api/health || exit 1"]
       interval: 15s
@@ -60,3 +71,7 @@ services:
 
 volumes:
   pgdata:
+
+networks:
+  apex_net:
+    driver: bridge

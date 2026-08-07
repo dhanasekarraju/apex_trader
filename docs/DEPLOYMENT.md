@@ -15,7 +15,7 @@ cp .env.example .env
 docker compose up -d --build
 ```
 
-Dashboard: `http://localhost:8080`
+Dashboard: `http://localhost:8090` (shared-VPS host port; see [VPS_COEXIST.md](VPS_COEXIST.md))
 
 ## Local Development
 
@@ -24,7 +24,7 @@ cd apex_trader
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 cp .env.example .env
-# Point DATABASE_URL to localhost if running postgres/redis locally
+# Point DATABASE_URL to localhost:5439 / REDIS to :6389 if using compose-published ports
 uvicorn services.gateway.main:app --host 0.0.0.0 --port 8080 --reload
 ```
 

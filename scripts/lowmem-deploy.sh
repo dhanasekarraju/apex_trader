@@ -19,7 +19,7 @@ docker stats --no-stream --format 'table {{.Name}}\t{{.MemUsage}}\t{{.MemPerc}}'
 
 echo "=== Health ==="
 sleep 5
-curl -sf http://127.0.0.1:8080/api/health && echo ""
+curl -sf http://127.0.0.1:8090/api/health && echo ""
 
 echo "=== Memory after ==="
 free -h

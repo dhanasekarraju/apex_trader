@@ -65,7 +65,7 @@ systemctl reload nginx
 echo ""
 echo "=== Done ==="
 echo "Dashboard: https://$DOMAIN/apex/"
-echo "Health:    curl -s http://127.0.0.1:8080/api/health"
+echo "Health:    curl -s http://127.0.0.1:8090/api/health"
 echo ""
 echo "Next:"
 echo "  1. Kite developer console → redirect URL: https://$DOMAIN/apex/api/kite/callback"

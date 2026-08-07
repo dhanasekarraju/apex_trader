@@ -2,7 +2,7 @@
 # End-to-end verification: infra, API, persistence, emergency halt.
 set -euo pipefail
 cd "$(dirname "$0")/.."
-BASE="${1:-http://127.0.0.1:8080}"
+BASE="${1:-http://127.0.0.1:8090}"
 
 echo "== Health =="
 curl -sf "$BASE/api/health" | python3 -m json.tool

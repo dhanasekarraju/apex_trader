@@ -27,5 +27,6 @@ else
 fi
 
 echo ""
-echo "Apex Trader → http://localhost:8080"
+echo "Apex Trader → http://localhost:8090"
 echo "Verify       → ./scripts/verify-stack.sh"
+echo "VPS coexist  → docs/VPS_COEXIST.md (ports 8090 / 5439 / 6389)"

@@ -42,7 +42,9 @@ cp .env.example .env
 docker compose up -d --build
 ```
 
-Open **http://localhost:8080**
+Open **http://localhost:8090** (host port; container still listens on 8080).
+
+On a VPS that already runs Rubaih futures (`:8080`) and Greeks (`:8088`), see [docs/VPS_COEXIST.md](docs/VPS_COEXIST.md).
 
 ## Trading modes
 

@@ -66,7 +66,7 @@ elif [ "$status" = "WARNING" ]; then
 else
   bad "Risk $status — fix before market"
 fi
-sync=$(curl -sf -X POST "${auth[@]}" "http://127.0.0.1:8080/api/portfolio/sync-capital" 2>/dev/null || \
+sync=$(curl -sf -X POST "${auth[@]}" "http://127.0.0.1:8090/api/portfolio/sync-capital" 2>/dev/null || \
        curl -sf -X POST "${auth[@]}" "$BASE/api/portfolio/sync-capital" 2>/dev/null || true)
 if echo "$sync" | grep -q '"equity"'; then
   eq=$(echo "$sync" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('data',d).get('equity',''))" 2>/dev/null)

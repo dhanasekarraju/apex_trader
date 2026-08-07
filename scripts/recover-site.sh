@@ -36,9 +36,9 @@ $DC up -d --build postgres redis api
 echo ""
 echo "== Waiting for health =="
 for i in $(seq 1 30); do
-  if curl -sf http://127.0.0.1:8080/api/health >/dev/null 2>&1; then
+  if curl -sf http://127.0.0.1:8090/api/health >/dev/null 2>&1; then
     echo "API healthy after ${i}s"
-    curl -sf http://127.0.0.1:8080/api/health | python3 -m json.tool
+    curl -sf http://127.0.0.1:8090/api/health | python3 -m json.tool
     echo ""
     echo "Site should load at: https://tn88seval.in/apex/"
     exit 0
@@ -46,6 +46,6 @@ for i in $(seq 1 30); do
   sleep 2
 done
 
-echo "ERROR: API did not become healthy on :8080"
+echo "ERROR: API did not become healthy on :8090"
 echo "Check: $DC logs api --tail 100"
 exit 1

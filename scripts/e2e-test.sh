@@ -3,9 +3,9 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-# Direct backend: http://127.0.0.1:8080
+# Direct backend (compose host publish): http://127.0.0.1:8090
 # Behind nginx:   https://tn88seval.in/apex
-BASE="${1:-http://127.0.0.1:8080}"
+BASE="${1:-http://127.0.0.1:8090}"
 API_KEY="${APEX_API_KEY:-$(python3 -c "import hashlib; print(hashlib.sha256(b'test-secret-for-ci').hexdigest()[:32])" 2>/dev/null || echo test-api-key-for-ci)}"
 AUTH=(-H "X-API-Key: $API_KEY")
 PASS=0
