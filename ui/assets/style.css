@@ -205,3 +205,18 @@ footer { margin-top: 32px; text-align: center; font-size: 11px; color: var(--dim
 .pill.status-warning { border-color: rgba(245,158,11,0.5); color: var(--amber); }
 .pill.status-danger { border-color: rgba(239,68,68,0.5); color: var(--red); }
 .pill.status-halted { border-color: rgba(239,68,68,0.8); color: var(--red); background: rgba(127,29,29,0.2); }
+
+/* Minimal control dashboard */
+.app-minimal { max-width: 720px; }
+.header-minimal { border-bottom: 1px solid var(--border); margin-bottom: 24px; padding-bottom: 16px; }
+.footer-minimal { margin-top: 28px; text-align: center; font-size: 11px; color: var(--dim); }
+.intro { margin-bottom: 14px; line-height: 1.5; }
+.intro strong { color: var(--cyan); font-weight: 600; }
+.minimal-stats { margin: 14px 0; grid-template-columns: repeat(3, 1fr); }
+@media (max-width: 600px) { .minimal-stats { grid-template-columns: 1fr; } }
+.blockers { color: var(--amber); margin: 10px 0; line-height: 1.4; }
+.blocker-actions { margin-bottom: 0; flex-wrap: wrap; }
+.actions { margin-top: 16px; margin-bottom: 0; }
+.hint { margin-top: 6px; font-size: 11px; }
+.ok-text { color: var(--green); }
+.warn-text { color: var(--amber); }
