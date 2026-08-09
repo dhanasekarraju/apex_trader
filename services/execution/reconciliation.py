@@ -43,11 +43,13 @@ async def reconcile_on_startup(
                 "positions_added": 0,
                 "positions_removed": 0,
                 "positions_updated": 0,
+                "orphaned_closed": 0,
                 "reason": str(e),
             }
 
-    await clear_reconciliation_degraded()
-
+    # ------------------------------------------------------------------
+    # 1. Sync portfolio to match broker (existing logic)
+    # ------------------------------------------------------------------
     db_by_symbol = {p.symbol: p for p in portfolio.state.positions}
     broker_by_symbol = {
         p["symbol"]: p for p in broker_positions if p.get("qty", 0) > 0
@@ -95,9 +97,70 @@ async def reconcile_on_startup(
                 removed += 1
                 audit("reconcile_position_removed", symbol=symbol)
 
+    # ------------------------------------------------------------------
+    # 2. FIX: Close orphaned trades in DB that have no broker position
+    # ------------------------------------------------------------------
+    orphaned = 0
+    for trade in open_rows:
+        if trade.symbol not in broker_by_symbol:
+            try:
+                exit_price = (
+                    getattr(trade, "entry_price", None)
+                    or getattr(trade, "avg_entry", None)
+                    or 0
+                )
+                await trades.update_status(
+                    trade.client_order_id,
+                    status="closed",
+                    exit_price=exit_price,
+                    exit_reason="reconciliation_flat",
+                    message="Auto-closed during reconciliation: no broker position",
+                )
+                orphaned += 1
+                audit(
+                    "reconcile_orphan_closed",
+                    symbol=trade.symbol,
+                    client_order_id=trade.client_order_id,
+                )
+            except Exception as e:
+                audit(
+                    "reconcile_orphan_close_failed",
+                    symbol=trade.symbol,
+                    error=str(e),
+                )
+
+    if orphaned:
+        open_rows = await trades.open_trades()  # refresh after cleanup
+
     if added or removed or updated:
         await portfolio.persist()
 
+    # ------------------------------------------------------------------
+    # 3. FIX: Symbol-set mismatch check — broker is source of truth
+    # ------------------------------------------------------------------
+    trade_symbols = {t.symbol for t in open_rows}
+    broker_symbols = set(broker_by_symbol.keys())
+
+    if broker_fetch_ok and trade_symbols != broker_symbols:
+        only_in_db = trade_symbols - broker_symbols
+        only_in_broker = broker_symbols - trade_symbols
+        reason = (
+            f"Reconciliation symbol mismatch: "
+            f"db_only={sorted(only_in_db)} broker_only={sorted(only_in_broker)}"
+        )
+        await set_reconciliation_degraded(reason)
+        return {
+            "reconciliation_status": "DEGRADED",
+            "open_trades_db": len(open_rows),
+            "broker_positions": len(broker_by_symbol),
+            "positions_added": added,
+            "positions_removed": removed,
+            "positions_updated": updated,
+            "orphaned_closed": orphaned,
+            "reason": reason,
+        }
+
+    await clear_reconciliation_degraded()
     return {
         "reconciliation_status": "OK",
         "open_trades_db": len(open_rows),
@@ -105,4 +168,5 @@ async def reconcile_on_startup(
         "positions_added": added,
         "positions_removed": removed,
         "positions_updated": updated,
+        "orphaned_closed": orphaned,
     }
