@@ -21,7 +21,10 @@ class SizeInput:
     equity: float
     entry: float
     stop_loss: float
-    buying_power: float = 0.0
+    buying_power: float | None = None
+    cash: float | None = None
+    daily_pnl: float = 0.0
+    open_notional: float = 0.0
     atr: float = 0.0
     volatility_pct: float = 1.0
     win_rate: float = 0.5
@@ -55,7 +58,7 @@ class PositionSizingEngine:
             return SizeResult(0, method.value, 0, 0, True, "Invalid entry/SL")
 
         per_share_risk = abs(inp.entry - inp.stop_loss)
-        max_risk_pct = self.cfg.max_risk_per_trade_pct * inp.risk_multiplier
+        max_risk_pct = self.cfg.max_risk_per_trade_pct * max(0.0, min(1.0, inp.risk_multiplier))
         risk_budget = inp.equity * max_risk_pct / 100
 
         if method == SizingMethod.ATR and inp.atr > 0:
@@ -80,38 +83,22 @@ class PositionSizingEngine:
             qty = risk_budget / per_share_risk
             detail = f"Fixed risk {max_risk_pct:.2f}%"
 
-        max_capital = self._cap_basis(inp) * self._max_position_pct(self._cap_basis(inp))
+        costs = inp.entry * (self.cfg.estimated_round_trip_cost_bps + self.cfg.estimated_exit_slippage_bps) / 10000
+        daily_room = max(0.0, inp.equity * self.cfg.max_daily_loss_pct / 100 + min(0.0, inp.daily_pnl))
+        heat_room_rs = inp.equity * max(0.0, self.cfg.max_portfolio_heat_pct - inp.portfolio_heat_pct) / 100
+        qty = min(qty, min(risk_budget, daily_room, heat_room_rs) / (per_share_risk + costs))
+        max_capital = min(inp.equity * self.cfg.max_position_value_pct / 100,
+                          self._cap_basis(inp) * (1 - self.cfg.cash_reserve_pct / 100),
+                          max(0.0, inp.equity * (1 - self.cfg.cash_reserve_pct / 100) - inp.open_notional))
+        detail += f"; cash-based value cap INR {max_capital:.2f}; risk budget INR {risk_budget:.2f}"
         max_qty = max_capital / inp.entry if inp.entry > 0 else 0
         capped = qty > max_qty
         qty = max(0, min(int(qty), int(max_qty)))
         cfg = get_settings()
         tol = max(1.0, float(cfg.sizing_risk_breach_tolerance or 1.01))
 
-        def _risk_ok(q: int) -> bool:
-            if q <= 0 or inp.equity <= 0:
-                return False
-            return (q * per_share_risk) / inp.equity * 100 <= max_risk_pct * tol
-
         if qty < 1:
-            # Never force a live 1-share lot that breaches the risk budget.
-            if (
-                cfg.trading_mode != "live"
-                and inp.equity < 15_000
-                and int(max_qty) >= 1
-                and _risk_ok(1)
-            ):
-                qty = 1
-                detail += " · small-account min 1 share (within risk)"
-            else:
-                return SizeResult(
-                    0,
-                    method.value,
-                    0,
-                    0,
-                    capped,
-                    detail + " · qty<1 after risk budget — skip (no unsafe 1-share override)",
-                )
-
+            return SizeResult(0, method.value, 0, 0, True, detail + "; minimum lot exceeds budget")
         risk_rs = qty * per_share_risk
         risk_pct = risk_rs / inp.equity * 100 if inp.equity else 0
         if risk_pct > max_risk_pct * tol:
@@ -130,12 +117,7 @@ class PositionSizingEngine:
         )
 
     def _cap_basis(self, inp: SizeInput) -> float:
-        """Position notional cap — MIS buying power can exceed cash (margin/leverage)."""
-        bp = inp.buying_power if inp.buying_power > inp.equity else inp.equity
-        return max(inp.equity, bp)
-
-    def _max_position_pct(self, equity: float) -> float:
-        """Small accounts need a higher cap to afford 1 share of liquid midcaps."""
-        if equity < 15_000:
-            return 0.28
-        return 0.15
+        """Spendable cash ceiling; additional margin never increases it."""
+        cash = inp.equity if inp.cash is None else max(0.0, inp.cash)
+        bp = cash if inp.buying_power is None else max(0.0, inp.buying_power)
+        return min(inp.equity, cash, bp)

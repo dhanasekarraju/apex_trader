@@ -2,25 +2,24 @@
 
 from __future__ import annotations
 
-import hashlib
 import secrets
 
 from fastapi import HTTPException, Security, WebSocket, status
-from fastapi.security import APIKeyHeader, HTTPAuthorizationCredentials, HTTPBearer
+from fastapi.security import APIKeyHeader, HTTPAuthorizationCredentials, HTTPBearer, HTTPBasic, HTTPBasicCredentials
 
 from shared.config import Settings, get_settings
 
 _api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
 _bearer = HTTPBearer(auto_error=False)
+_basic = HTTPBasic(auto_error=False)
 
 
 def resolve_api_access_key(cfg: Settings | None = None) -> str:
-    """Production key from API_ACCESS_KEY; dev fallback derived from SECRET_KEY."""
+    """Require an explicitly configured access key; no predictable fallback."""
     cfg = cfg or get_settings()
     if cfg.api_access_key.strip():
         return cfg.api_access_key.strip()
-    digest = hashlib.sha256(cfg.secret_key.encode()).hexdigest()
-    return digest[:32]
+    raise HTTPException(status_code=503, detail="Set API_ACCESS_KEY before using trading controls")
 
 
 def _extract_token(
@@ -50,8 +49,21 @@ def verify_api_token(token: str | None, cfg: Settings | None = None) -> None:
 async def require_api_auth(
     x_api_key: str | None = Security(_api_key_header),
     credentials: HTTPAuthorizationCredentials | None = Security(_bearer),
+    basic: HTTPBasicCredentials | None = Security(_basic),
 ) -> None:
+    if basic:
+        verify_api_token(basic.password if basic.username == "apex" else None)
+        return
     verify_api_token(_extract_token(x_api_key, credentials))
+
+
+async def require_dashboard_auth(basic: HTTPBasicCredentials | None = Security(_basic)) -> None:
+    try:
+        verify_api_token(basic.password if basic and basic.username == "apex" else None)
+    except HTTPException as exc:
+        if exc.status_code == 401:
+            exc.headers = {"WWW-Authenticate": 'Basic realm="Apex Trader"'}
+        raise
 
 
 async def require_ws_auth(ws: WebSocket) -> None:

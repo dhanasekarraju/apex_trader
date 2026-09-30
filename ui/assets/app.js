@@ -6,12 +6,12 @@ function resolveApexBase() {
 }
 
 const API = resolveApexBase();
-const API_KEY = window.APEX_API_KEY || '';
+
 const POLL_MS = Math.max(Number(window.APEX_UI_POLL_MS) || 60000, 15000);
 
 function authHeaders(extra = {}) {
   const headers = { 'Content-Type': 'application/json', ...extra };
-  if (API_KEY) headers['X-API-Key'] = API_KEY;
+
   return headers;
 }
 
@@ -39,7 +39,7 @@ async function api(path, opts = {}) {
 function kiteConnectHref(status) {
   if (status?.login_url) return status.login_url;
   const login = `${API}/api/kite/login`;
-  if (API_KEY) return `${login}?api_key=${encodeURIComponent(API_KEY)}`;
+
   return login;
 }
 
@@ -59,7 +59,7 @@ async function loadKiteStatus() {
     const when = s.login_time
       ? ` · ${new Date(s.login_time).toLocaleString('en-IN')}`
       : '';
-    panel.innerHTML = `<span class="${s.connected ? 'ok-text' : 'warn-text'}">${s.message}${who}${when}</span>`;
+    panel.textContent = `${s.message}${who}${when}`;
     if (hint) {
       if (s.redirect_url && s.configured && !s.connected) {
         hint.style.display = 'block';
@@ -237,8 +237,27 @@ async function stopAutonomous() {
   await loadAutonomousPanel();
 }
 
+async function loadRiskPanel() {
+  try {
+    const d = await api('/api/dashboard');
+    const p = d.portfolio || {};
+    document.getElementById('riskSummary').textContent = `Mode: ${d.mode} · Capital ₹${p.equity} · Available cash ₹${p.cash} · Daily P&L ₹${p.daily_pnl} · Drawdown ${p.drawdown_pct}% · ${p.trading_halted ? 'HALTED' : 'Active'} · Reconciliation: ${d.reconciliation?.status || 'UNKNOWN'} ${d.reconciliation?.reason || ''}`;
+    const positions = d.positions || [];
+    document.getElementById('positionsSummary').textContent = positions.length ? positions.map(p => `${p.symbol}: ${p.qty} shares · entry ₹${p.entry} · stop ₹${p.stop_loss} · target ₹${p.take_profit} · ${p.stop_order_id ? 'stop ID ' + p.stop_order_id : 'protection unconfirmed'}`).join('\n') : 'No internally tracked positions. Check broker reconciliation status before live trading.';
+    const s = d.sizing_policy || {};
+    document.getElementById('sizingSummary').textContent = `Cash-based position cap ${s.max_position_value_pct}% · cash reserve ${s.cash_reserve_pct}% · per-trade risk ${s.max_risk_per_trade_pct}% · minimum net reward/risk ${s.min_net_reward_risk}. Latest decision: ${d.recent_decisions?.[0]?.sizing?.detail || 'none'}`;
+  } catch (e) {
+    document.getElementById('riskSummary').textContent = 'State unavailable — do not assume the account is flat. ' + e.message;
+  }
+}
+async function emergencyFlatten() {
+  if (!confirm('Halt entries and attempt to close tracked positions? Unconfirmed exits will remain flagged.')) return;
+  const result = await api('/api/admin/kill-switch/on', {method: 'POST'});
+  alert(result.ok ? 'Confirmed tracked exits completed; trading remains halted.' : 'Exit incomplete. Check broker positions and unresolved orders.');
+  await refreshAll();
+}
 async function refreshAll() {
-  await Promise.all([loadKiteStatus(), loadAutonomousPanel()]);
+  await Promise.all([loadKiteStatus(), loadAutonomousPanel(), loadRiskPanel()]);
 }
 
 handleKiteQueryParams();

@@ -40,8 +40,9 @@ class PortfolioState:
 
     def to_risk_state(self) -> RiskState:
         heat = sum(p.risk_pct for p in self.positions)
+        liquid_basis = min(self.equity, self.cash + sum(p.qty * p.entry for p in self.positions))
         return RiskState(
-            equity=self.equity,
+            equity=max(0.0, liquid_basis),
             cash=self.cash,
             daily_pnl=self.daily_pnl,
             weekly_pnl=self.weekly_pnl,

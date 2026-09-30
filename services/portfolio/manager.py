@@ -41,8 +41,9 @@ class PortfolioManager:
         self.state.cash = max(0.0, self.state.cash - cost)
         self.state.positions.append(pos)
         ok = await self.repo.add_position(self.state, pos, confidence=confidence)
-        if ok:
-            self.persistence_ok = await self.repo.save(self.state)
+        self.persistence_ok = bool(ok and await self.repo.save(self.state))
+        if not self.persistence_ok:
+            self.emergency_shutdown()
         from services.compliance.events import EventType
         from services.compliance.recorder import crce
 
@@ -63,13 +64,17 @@ class PortfolioManager:
         exit_price: float,
         exit_reason: str,
         pnl: float,
+        qty: float | None = None,
     ) -> bool:
         sym = symbol.upper()
         pos = next((p for p in self.state.positions if p.symbol.upper() == sym), None)
         if pos is None:
             return False
 
-        proceeds = pos.qty * exit_price
+        closed_qty = pos.qty if qty is None else float(qty)
+        if not 0 < closed_qty <= pos.qty:
+            raise ValueError("Exit quantity must be positive and no larger than position")
+        proceeds = closed_qty * exit_price
         self.state.cash += proceeds
         self.state.daily_pnl += pnl
         self.state.weekly_pnl += pnl
@@ -83,9 +88,11 @@ class PortfolioManager:
         else:
             self.state.consecutive_losses = 0
 
-        self.state.positions = [
-            p for p in self.state.positions if p.symbol.upper() != sym
-        ]
+        original_qty = pos.qty
+        pos.qty -= closed_qty
+        pos.risk_pct *= pos.qty / original_qty
+        if pos.qty <= 0:
+            self.state.positions = [p for p in self.state.positions if p is not pos]
 
         ok = await self.repo.close_position(
             self.state,
@@ -94,8 +101,9 @@ class PortfolioManager:
             exit_reason=exit_reason,
             pnl=pnl,
         )
-        if ok:
-            self.persistence_ok = await self.repo.save(self.state)
+        self.persistence_ok = bool(ok and await self.repo.save(self.state))
+        if not self.persistence_ok:
+            self.emergency_shutdown()
         from services.compliance.events import EventType
         from services.compliance.recorder import crce
 
@@ -134,8 +142,9 @@ class PortfolioManager:
 
     async def clear_after_flatten(self) -> bool:
         ok = await self.repo.close_all_positions(self.state)
-        if ok:
-            self.persistence_ok = await self.repo.save(self.state)
+        self.persistence_ok = bool(ok and await self.repo.save(self.state))
+        if not self.persistence_ok:
+            self.emergency_shutdown()
         return ok and self.persistence_ok
 
     def size_position(self, proposal: TradeProposal) -> float:
@@ -180,19 +189,16 @@ class PortfolioManager:
         buying_power: float | None = None,
     ) -> dict:
         """Update internal ledger from Zerodha margins — broker is source of truth for capital."""
-        if equity <= 0:
+        import math
+        if not all(math.isfinite(x) and x >= 0 for x in (equity, cash)):
             return {"ok": False, "reason": "invalid_equity"}
         previous = round(self.state.equity, 2)
         previous_peak = round(self.state.peak_equity, 2)
-        self.state.equity = round(equity, 2)
+        # Margin availability is not NAV. Never reset the risk ledger/high-water
+        # mark from a margin response (blocked margin is not an investment loss).
         self.state.cash = round(max(0.0, cash), 2)
-        bp = buying_power if buying_power and buying_power > 0 else equity
-        self.state.buying_power = round(max(bp, equity), 2)
-        # Stale peak from wrong INITIAL_CAPITAL makes drawdown look ~100% → DANGER block.
-        if self.state.peak_equity > self.state.equity * 1.02:
-            self.state.peak_equity = self.state.equity
-        elif self.state.peak_equity < self.state.equity:
-            self.state.peak_equity = self.state.equity
+        bp = buying_power if buying_power is not None else cash
+        self.state.buying_power = round(max(0.0, min(bp, cash, equity)), 2)
         peak_reset = previous_peak != round(self.state.peak_equity, 2)
         await self.persist()
         from services.compliance.events import EventType

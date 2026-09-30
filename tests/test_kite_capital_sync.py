@@ -11,7 +11,7 @@ from services.portfolio.manager import PortfolioManager
 
 
 @pytest.mark.asyncio
-async def test_sync_resets_stale_peak_equity():
+async def test_margin_sync_preserves_capital_and_peak():
     pf = PortfolioManager()
     pf.state.equity = 1_000_000
     pf.state.peak_equity = 1_000_000
@@ -22,9 +22,10 @@ async def test_sync_resets_stale_peak_equity():
         result = await pf.sync_capital_from_kite(4022.8, 4022.8)
 
     assert result["ok"] is True
-    assert result["peak_reset"] is True
-    assert pf.state.equity == 4022.8
-    assert pf.state.peak_equity == 4022.8
+    assert result["peak_reset"] is False
+    assert pf.state.equity == 1_000_000
+    assert pf.state.peak_equity == 1_000_000
+    assert pf.state.cash == 4022.8
 
 
 @pytest.mark.asyncio

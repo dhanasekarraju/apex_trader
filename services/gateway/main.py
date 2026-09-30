@@ -17,7 +17,7 @@ from pydantic import BaseModel, ConfigDict, field_validator
 
 from services.control.trade_stream import recent_trade_events
 from services.core.orchestrator import TradingOrchestrator
-from services.gateway.auth import cors_allowed_origins, require_api_auth, require_ws_auth, resolve_api_access_key
+from services.gateway.auth import cors_allowed_origins, require_api_auth, require_ws_auth, require_dashboard_auth
 from services.gateway.middleware import EnvelopeMiddleware, register_exception_handlers
 from shared.config import get_settings
 from shared.database import init_db
@@ -259,21 +259,16 @@ class GovernanceStateRequest(BaseModel):
     throttle_factor: float | None = None
 
 
-@app.get("/")
+@app.get("/", dependencies=[Depends(require_dashboard_auth)])
 async def index():
     index_path = UI_DIR / "index.html"
     if not index_path.is_file():
         raise HTTPException(404, "UI not found")
     base = _base_path()
-    api_key = resolve_api_access_key()
     html = index_path.read_text(encoding="utf-8")
     html = html.replace(
         "window.APEX_BASE = '';",
         f"window.APEX_BASE = {json.dumps(base)};",
-    )
-    html = html.replace(
-        "window.APEX_API_KEY = '';",
-        f"window.APEX_API_KEY = {json.dumps(api_key)};",
     )
     cfg = get_settings()
     poll_ms = int(max(cfg.ui_poll_interval_sec, 1.0) * 1000)
@@ -281,7 +276,7 @@ async def index():
         "window.APEX_UI_POLL_MS = 3000;",
         f"window.APEX_UI_POLL_MS = {poll_ms};",
     )
-    return HTMLResponse(html)
+    return HTMLResponse(html, headers={"Cache-Control": "no-store", "Referrer-Policy": "no-referrer"})
 
 
 @app.get("/api/health")
@@ -299,12 +294,15 @@ async def health():
     }
 
 
-@app.get("/api/dashboard")
+@app.get("/api/dashboard", dependencies=[Depends(require_api_auth)])
 async def dashboard():
-    return orch.dashboard()
+    from services.control.reconciliation_state import get_reconciliation_status
+    result = orch.dashboard()
+    result["reconciliation"] = await get_reconciliation_status()
+    return result
 
 
-@app.get("/api/regime/{symbol}")
+@app.get("/api/regime/{symbol}", dependencies=[Depends(require_api_auth)])
 async def regime(symbol: str):
     try:
         sym = normalize_symbol(symbol)
@@ -331,10 +329,10 @@ async def analyze(req: AnalyzeRequest):
 
 @app.post("/api/backtest", dependencies=[Depends(require_api_auth)])
 async def backtest(req: BacktestRequest):
-    return orch.run_backtest(req.symbol, req.strategy)
+    return await orch.run_backtest(req.symbol, req.strategy)
 
 
-@app.get("/api/strategies")
+@app.get("/api/strategies", dependencies=[Depends(require_api_auth)])
 async def strategies():
     from services.governance.engine import strategy_governance
     from services.strategies.engine import STRATEGY_REGISTRY
@@ -348,7 +346,7 @@ async def strategies():
     }
 
 
-@app.get("/api/governance/status")
+@app.get("/api/governance/status", dependencies=[Depends(require_api_auth)])
 async def governance_status():
     from services.governance.engine import strategy_governance
 
@@ -383,7 +381,7 @@ async def governance_set_state(name: str, req: GovernanceStateRequest):
     return result
 
 
-@app.get("/api/risk/limits")
+@app.get("/api/risk/limits", dependencies=[Depends(require_api_auth)])
 async def risk_limits():
     cfg = get_settings()
     return {
@@ -402,27 +400,27 @@ async def risk_limits():
     }
 
 
-@app.get("/api/readiness")
+@app.get("/api/readiness", dependencies=[Depends(require_api_auth)])
 async def readiness():
     return await orch.readiness_report()
 
 
-@app.get("/api/shadow/report")
+@app.get("/api/shadow/report", dependencies=[Depends(require_api_auth)])
 async def shadow_report():
     return orch.execution.shadow_report()
 
 
-@app.get("/api/journal/weekly")
+@app.get("/api/journal/weekly", dependencies=[Depends(require_api_auth)])
 async def journal_weekly():
     return orch.journal.weekly_report()
 
 
-@app.get("/api/journal/monthly")
+@app.get("/api/journal/monthly", dependencies=[Depends(require_api_auth)])
 async def journal_monthly():
     return orch.journal.monthly_report()
 
 
-@app.get("/api/watchdog/health")
+@app.get("/api/watchdog/health", dependencies=[Depends(require_api_auth)])
 async def watchdog_health():
     health = await orch.watchdog.check_all(await orch.execution.connect())
     return {
@@ -436,7 +434,7 @@ async def watchdog_health():
     }
 
 
-@app.get("/api/mode")
+@app.get("/api/mode", dependencies=[Depends(require_api_auth)])
 async def get_mode():
     cfg = get_settings()
     return {
@@ -452,7 +450,7 @@ async def portfolio_sync_capital():
     return await orch.sync_capital_from_kite(force=True)
 
 
-@app.get("/api/kite/status")
+@app.get("/api/kite/status", dependencies=[Depends(require_api_auth)])
 async def kite_status():
     from services.brokers.kite_auth import kite_auth
     return await kite_auth.get_status()
@@ -491,20 +489,17 @@ async def kite_positions():
     }
 
 
-@app.get("/api/kite/login")
-async def kite_login(api_key: str | None = Query(default=None)):
-    """Browser OAuth start — accepts X-API-Key header or ?api_key= query (dashboard link)."""
+@app.get("/api/kite/login", dependencies=[Depends(require_api_auth)])
+async def kite_login():
+    """Authenticated OAuth start; credentials never appear in the URL."""
     from services.brokers.kite_auth import kite_auth
-    from services.gateway.auth import verify_api_token
-
-    verify_api_token(api_key)
     try:
         return RedirectResponse(kite_auth.login_url())
     except ValueError as e:
         raise HTTPException(400, str(e)) from e
 
 
-@app.get("/api/kite/callback")
+@app.get("/api/kite/callback", dependencies=[Depends(require_api_auth)])
 async def kite_callback(
     request_token: str | None = Query(default=None),
     status: str | None = Query(default=None),
@@ -546,6 +541,10 @@ async def set_mode(req: ModeRequest):
     if mode not in ("paper", "shadow", "live"):
         raise HTTPException(400, "Invalid mode — use paper, shadow, or live")
 
+    if mode != get_settings().trading_mode:
+        if orch.portfolio.state.positions or await orch.execution._trades.open_trades():
+            raise HTTPException(409, "Close and reconcile all positions/orders before changing mode")
+        await orch.autonomous.stop()
     if mode == "live":
         blockers = await orch.execution.live_blockers()
         if blockers:
@@ -560,6 +559,8 @@ async def set_mode(req: ModeRequest):
     get_settings.cache_clear()
     orch.cfg = get_settings()
     orch.execution.refresh_broker()
+    orch.lifecycle.cfg = orch.cfg
+    orch.data.cfg = orch.cfg
     from services.control.layer import control_layer
 
     await control_layer.sync_trading_mode_state(mode)
@@ -567,12 +568,12 @@ async def set_mode(req: ModeRequest):
     return {"mode": mode, "message": f"Switched to {mode} mode"}
 
 
-@app.get("/api/risk/pnl/live")
+@app.get("/api/risk/pnl/live", dependencies=[Depends(require_api_auth)])
 async def live_pnl():
     return await orch.live_pnl()
 
 
-@app.get("/api/risk/status")
+@app.get("/api/risk/status", dependencies=[Depends(require_api_auth)])
 async def risk_status():
     from services.control.halt import get_cached_risk
 
@@ -583,7 +584,7 @@ async def risk_status():
     return orch.risk_status(pnl)
 
 
-@app.get("/api/risk/trades/recent")
+@app.get("/api/risk/trades/recent", dependencies=[Depends(require_api_auth)])
 async def recent_trades(limit: int = Query(default=30, ge=1, le=100)):
     return {"events": recent_trade_events(limit)}
 
@@ -620,7 +621,7 @@ async def emergency_flatten():
 
 @app.post("/api/backtest/validate", dependencies=[Depends(require_api_auth)])
 async def backtest_validate(req: BacktestRequest):
-    result = orch.run_backtest(req.symbol, req.strategy)
+    result = await orch.run_backtest(req.symbol, req.strategy)
     return {
         **result,
         "auto_reject": not result.get("passed_validation", False),
@@ -675,7 +676,7 @@ async def autonomous_tick_now():
     return await orch.autonomous.tick()
 
 
-@app.get("/api/control/status")
+@app.get("/api/control/status", dependencies=[Depends(require_api_auth)])
 async def control_status():
     from services.icb.engine import icb
 
@@ -684,7 +685,7 @@ async def control_status():
     )
 
 
-@app.get("/api/icb/status")
+@app.get("/api/icb/status", dependencies=[Depends(require_api_auth)])
 async def icb_status():
     from services.icb.engine import icb
 
@@ -730,7 +731,7 @@ async def admin_reset_kill_switch():
     return await orch.admin_reset_kill_switch()
 
 
-@app.get("/api/compliance/integrity")
+@app.get("/api/compliance/integrity", dependencies=[Depends(require_api_auth)])
 async def compliance_integrity():
     from services.compliance.store import EventStore
 
@@ -772,7 +773,7 @@ async def compliance_report():
     return ComplianceReportGenerator().generate(reference_snapshot=reference)
 
 
-@app.get("/api/metrics")
+@app.get("/api/metrics", dependencies=[Depends(require_api_auth)])
 async def api_metrics():
     return await metrics()
 
@@ -952,7 +953,7 @@ async def chaos_report():
     return chaos_engine.last_report
 
 
-@app.get("/api/chaos/gate")
+@app.get("/api/chaos/gate", dependencies=[Depends(require_api_auth)])
 async def chaos_gate_status():
     from services.chaos.live_gate import ChaosLiveGate
 

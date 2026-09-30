@@ -6,6 +6,7 @@ from functools import lru_cache
 from pathlib import Path
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic import Field
 
 _ROOT = Path(__file__).resolve().parents[1]
 
@@ -34,6 +35,13 @@ class Settings(BaseSettings):
     # Capital & risk
     initial_capital: float = 1_000_000.0
     max_risk_per_trade_pct: float = 0.5
+    max_position_value_pct: float = Field(25.0, gt=0, le=100)
+    cash_reserve_pct: float = Field(10.0, ge=0, lt=100)
+    min_net_reward_risk: float = Field(1.5, ge=1)
+    estimated_round_trip_cost_bps: float = Field(10.0, ge=0)
+    estimated_exit_slippage_bps: float = Field(5.0, ge=0)
+    golive_min_completed_trades: int = 30
+    validation_max_age_days: int = 7
     max_daily_loss_pct: float = 1.5
     max_weekly_loss_pct: float = 3.0
     max_monthly_loss_pct: float = 5.0

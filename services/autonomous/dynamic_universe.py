@@ -236,12 +236,7 @@ class DynamicUniverseSelector:
             extras = [s for s in _LIQUID_CANDIDATES if s not in pool]
             pool.extend(extras[: max(0, pool_size - len(pool))])
 
-        # Scan cheapest first — broker is final gate if margin insufficient.
-        price_by_sym: dict[str, float] = {}
-        for sym in pool:
-            q = quotes.get(sym.upper())
-            if q:
-                price_by_sym[sym.upper()] = float(q.get("last_price") or 0)
-        pool.sort(key=lambda s: price_by_sym.get(s.upper(), float("inf")))
+        if self.cfg.autonomous_universe_max_price > 0:
+            pool = [sym for sym in pool if 0 < float(quotes.get(sym, {}).get("last_price") or 0) <= self.cfg.autonomous_universe_max_price]
         scan = pool[:scan_size]
         return pool, scan, "kite_trending"

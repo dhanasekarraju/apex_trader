@@ -41,11 +41,15 @@ class LivePnLEngine:
     async def compute(self) -> dict:
         broker = get_broker()
         broker_positions: list[dict] = []
+        stale = False
         if self.cfg.trading_mode != "shadow":
             try:
                 if await broker.connect():
                     broker_positions = await broker.fetch_open_positions()
+                else:
+                    stale = True
             except Exception as e:
+                stale = True
                 audit("pnl_broker_fetch_failed", error=str(e))
 
         if not broker_positions:
@@ -54,6 +58,11 @@ class LivePnLEngine:
         symbols = [p["symbol"] for p in broker_positions if p.get("symbol")]
         ltps = await self._fetch_ltps(symbols)
 
+        if self.cfg.trading_mode == "live" and any(not ltps.get(s) for s in symbols):
+            stale = True
+        if stale and self.cfg.trading_mode == "live":
+            from services.control.reconciliation_state import set_reconciliation_degraded
+            await set_reconciliation_degraded("Broker/PnL feed unavailable; entries paused")
         positions: list[dict] = []
         total_unrealized = 0.0
         total_exposure_rs = 0.0
@@ -110,6 +119,7 @@ class LivePnLEngine:
         portfolio_pnl = total_unrealized
 
         return {
+            "stale": stale,
             "portfolio_pnl": round(portfolio_pnl, 2),
             "daily_pnl": round(daily_pnl, 2),
             "unrealized_pnl": round(total_unrealized, 2),
@@ -143,6 +153,8 @@ class LivePnLEngine:
             return {}
         if self.market_data.has_real_data_configured():
             return await self._kite_ltps(symbols)
+        if self.cfg.trading_mode in ("live", "shadow"):
+            return {}
         out: dict[str, float] = {}
         for sym in symbols:
             df = self.market_data.synthetic_ohlcv(sym, bars=5)

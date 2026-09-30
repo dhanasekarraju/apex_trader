@@ -39,8 +39,14 @@ class LiveSafetyGate:
         if not await broker.is_connected():
             blockers.append("Broker not connected")
 
+        if cfg.kite_autoslice:
+            blockers.append("Auto-slice disabled: all child orders must be tracked before use")
         if not cfg.enable_live_execution:
             blockers.append("ENABLE_LIVE_EXECUTION is false")
+
+        liquid_backing = portfolio.state.cash + sum(p.qty * p.entry for p in portfolio.state.positions)
+        if portfolio.state.equity > liquid_backing + 1.0:
+            blockers.append("Capital ledger exceeds liquid backing; reconcile the configured capital before live trading")
 
         if not cfg.golive_approved:
             blockers.append(
@@ -60,4 +66,12 @@ class LiveSafetyGate:
 
         blockers.extend(live_capital_blockers(require_full_suite=True))
 
+        from services.golive.evidence import validation_blockers
+        blockers.extend(validation_blockers(cfg))
+        from services.shadow.engine import ShadowEngine
+        shadow = ShadowEngine().weekly_report()
+        if (shadow.get("active_days", 0) < cfg.golive_min_shadow_days
+                or shadow.get("completed_trades", 0) < cfg.golive_min_completed_trades
+                or shadow.get("total_shadow_pnl", 0) <= 0):
+            blockers.append("Insufficient profitable completed shadow history; operator approval cannot bypass")
         return len(blockers) == 0, blockers

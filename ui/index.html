@@ -58,11 +58,19 @@
     </div>
   </div>
 
+  <section class="card">
+    <h2>Capital and safety</h2>
+    <p id="riskSummary">Loading confirmed state…</p>
+    <p id="sizingSummary">Cash-based sizing; position value and stop-loss risk are different.</p>
+    <pre id="positionsSummary" style="white-space:pre-wrap">Loading positions…</pre>
+    <button class="btn" type="button" onclick="emergencyFlatten()">Emergency halt and close positions</button>
+    <p class="metric-sub">Stopping autonomous scanning does not close positions. Any unresolved exit remains visible and requires broker review.</p>
+  </section>
   <footer class="footer-minimal">
     Backend keeps trading when this tab is closed · MIS square-off 15:15 IST
   </footer>
 </div>
-<script>window.APEX_BASE = ''; window.APEX_API_KEY = ''; window.APEX_UI_POLL_MS = 60000;</script>
+<script>window.APEX_BASE = ''; window.APEX_UI_POLL_MS = 60000;</script>
 <script src="assets/app.js?v=8"></script>
 </body>
 </html>

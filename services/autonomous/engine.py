@@ -70,7 +70,8 @@ class AutonomousEngine:
         result = await self.orch.execution.eod_square_off(
             reason=f"mis_eod_square_off@{cfg.mis_square_off_time}_IST"
         )
-        self._last_square_off_day = day_key
+        if result.get("ok"):
+            self._last_square_off_day = day_key
         try:
             await self.orch.alerts.send(
                 "MIS EOD SQUARE-OFF",

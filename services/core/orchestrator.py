@@ -155,13 +155,17 @@ class TradingOrchestrator:
         )
         try:
             return await with_timeout(
-                self._analyze_symbol(symbol),
+                self._locked_analyze(symbol),
                 seconds=timeout,
                 label="analyze_symbol",
             )
         except TimeoutError as exc:
             audit("analyze_timeout", symbol=symbol, error=str(exc))
             return self._no_trade(symbol, str(exc), "unclear")
+
+    async def _locked_analyze(self, symbol: str) -> dict:
+        async with self.execution.order_lock:
+            return await self._analyze_symbol(symbol)
 
     async def _analyze_symbol(self, symbol: str) -> dict:
         from services.icb.actions import ICBAction
@@ -217,8 +221,11 @@ class TradingOrchestrator:
         sig = await self._rebase_signal_to_ltp(symbol, sig)
 
         size_in = SizeInput(
-            equity=self.portfolio.state.equity,
-            buying_power=self.portfolio.state.buying_power or self.portfolio.state.equity,
+            equity=self.portfolio.state.to_risk_state().equity,
+            buying_power=(self.portfolio.state.buying_power if self.cfg.trading_mode == "live" else self.portfolio.state.cash),
+            cash=self.portfolio.state.cash,
+            daily_pnl=self.portfolio.state.daily_pnl,
+            open_notional=sum(p.qty * p.entry for p in self.portfolio.state.positions),
             entry=sig.entry,
             stop_loss=sig.stop_loss,
             volatility_pct=regime.volatility_pct,
@@ -333,7 +340,7 @@ class TradingOrchestrator:
                 "stop_order_id": result.raw.get("stop_order_id"),
             }
             if result.status.value in ("filled", "partial"):
-                if self.cfg.trading_mode != "shadow":
+                if result.filled_qty > 0:
                     pos = PositionView(
                         symbol=symbol,
                         qty=result.filled_qty or risk_decision.final_quantity,
@@ -409,24 +416,14 @@ class TradingOrchestrator:
             return sig
         if abs(ltp - sig.entry) / sig.entry * 100 <= self.cfg.max_entry_deviation_pct:
             return sig
-        ratio = ltp / sig.entry
-        return Signal(
-            symbol=sig.symbol,
-            strategy=sig.strategy,
-            side=sig.side,
-            entry=round(ltp, 4),
-            stop_loss=round(sig.stop_loss * ratio, 4),
-            take_profit=round(sig.take_profit * ratio, 4),
-            confidence=sig.confidence,
-            qty_suggestion=sig.qty_suggestion,
-            reasons=sig.reasons + [f"Rebased entry {sig.entry:.2f}→LTP {ltp:.2f}"],
-            timeframe=sig.timeframe,
-        )
+        # Keep the original signal so risk rejects a stale/deviated entry.
+        return sig
 
-    def run_backtest(self, symbol: str, strategy: str | None = None) -> dict:
-        df = self.data.synthetic_ohlcv(symbol, bars=800)
+    async def run_backtest(self, symbol: str, strategy: str | None = None) -> dict:
+        from services.golive.evidence import save_validation
+        df, source = await self.data.get_trading_ohlcv(symbol, mode="shadow", bars=5000)
         r = self.backtest.run_full_validation(symbol, df, strategy)
-        return {
+        result = {
             "strategy": r.strategy, "symbol": r.symbol,
             "total_trades": r.total_trades, "win_rate": r.win_rate,
             "net_return_pct": r.net_return_pct, "sharpe": r.sharpe,
@@ -436,10 +433,14 @@ class TradingOrchestrator:
             "walk_forward_passed": r.walk_forward_passed,
             "monte_carlo_passed": r.monte_carlo_passed,
             "rejection_reasons": r.rejection_reasons,
+            "data_source": source,
         }
+        save_validation(result, self.cfg)
+        return result
 
     async def readiness_report(self) -> dict:
-        bt = self.run_backtest("RELIANCE")
+        from services.golive.evidence import latest_validation
+        bt = latest_validation()
         shadow = self.execution.shadow_report()
         health = await self.watchdog.check_all()
         live_blockers = await self.execution.live_blockers()
@@ -589,6 +590,8 @@ class TradingOrchestrator:
         self.equity_curve = self.equity_curve[-100:]
         return {
             "portfolio": m,
+            "positions": [vars(p) for p in self.portfolio.state.positions],
+            "sizing_policy": {k: getattr(self.cfg, k) for k in ("max_position_value_pct", "cash_reserve_pct", "max_risk_per_trade_pct", "min_net_reward_risk")},
             "mode": self.cfg.trading_mode,
             "principles": [
                 "ICB → Risk → Execution — no bypass",

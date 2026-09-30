@@ -17,10 +17,11 @@ async def test_analyze_pipeline(orch):
     assert result["symbol"] == "RELIANCE"
 
 
-def test_backtest_validation(orch):
-    result = orch.run_backtest("RELIANCE", "momentum")
-    assert "sharpe" in result
-    assert "passed_validation" in result
+@pytest.mark.asyncio
+async def test_backtest_requires_real_history(orch):
+    from services.market_data.service import RealDataRequired
+    with pytest.raises(RealDataRequired):
+        await orch.run_backtest("RELIANCE", "momentum")
 
 
 @pytest.mark.asyncio

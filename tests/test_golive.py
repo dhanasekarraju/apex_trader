@@ -28,7 +28,7 @@ def test_passes_with_strong_metrics():
             "sharpe": 1.5, "win_rate": 55, "profit_factor": 1.8,
             "max_drawdown": 5, "passed_validation": True,
         },
-        shadow={"simulated_fills": 50, "win_rate": 52},
+        shadow={"simulated_fills": 50, "completed_trades": 50, "active_days": 14, "total_shadow_pnl": 100, "win_rate": 52},
         risk_healthy=True,
         data_quality=0.95,
         watchdog_ok=True,
@@ -38,7 +38,7 @@ def test_passes_with_strong_metrics():
     assert all(c.passed for c in report.categories)
 
 
-def test_operator_override_skips_backtest_shadow_blockers(monkeypatch):
+def test_operator_approval_cannot_skip_backtest_shadow_blockers(monkeypatch):
     monkeypatch.setenv("GOLIVE_APPROVED", "true")
     from shared.config import get_settings
 
@@ -55,7 +55,6 @@ def test_operator_override_skips_backtest_shadow_blockers(monkeypatch):
         watchdog_ok=True,
         strategy_scores={"momentum": 55},
     )
-    assert report.overall_passed
-    assert "Backtest" not in " ".join(report.blockers)
-    assert "shadow" not in " ".join(report.blockers).lower()
-    assert all(c.passed for c in report.categories)
+    assert not report.overall_passed
+    assert "Backtest" in " ".join(report.blockers)
+    assert "shadow" in " ".join(report.blockers).lower()

@@ -1,110 +1,71 @@
-"""Shadow mode — real data, simulated execution, performance tracking."""
-
+"""Persistent shadow entries and completed net outcomes from real quotes."""
 from __future__ import annotations
-
 import json
-from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-
-from services.brokers.base import OrderRequest, OrderResult, OrderStatus, OrderType
+from services.brokers.base import OrderResult, OrderStatus
 from shared.config import get_settings
-from shared.logging import audit
 
-_ROOT = Path(__file__).resolve().parents[2]
-SHADOW_DIR = _ROOT / "data" / "shadow"
-
-
-@dataclass
-class ShadowFill:
-    symbol: str
-    side: str
-    qty: float
-    simulated_fill: float
-    market_at_signal: float
-    slippage_bps: float
-    would_have_pnl: float | None
-    missed: bool
-    strategy: str
-    timestamp: str
-
+SHADOW_DIR = Path(__file__).resolve().parents[2] / 'data' / 'shadow'
 
 class ShadowEngine:
-    """
-    Real market data + simulated fills.
-    No broker orders placed.
-    """
-
-    def __init__(self) -> None:
+    def __init__(self):
         self.cfg = get_settings()
+        self.events = []
+        self.positions = {}
         SHADOW_DIR.mkdir(parents=True, exist_ok=True)
-        self.fills: list[ShadowFill] = []
+        self.path = SHADOW_DIR / 'lifecycle-v2.jsonl'
+        if self.path.exists():
+            for line in self.path.read_text(encoding='utf-8').splitlines():
+                event = json.loads(line)
+                self.events.append(event)
+                self._apply(event)
 
-    def simulate(
-        self,
-        req: OrderRequest,
-        market_price: float,
-        actual_later_price: float | None = None,
-    ) -> OrderResult:
-        slip_bps = self.cfg.shadow_slippage_bps
-        slip = market_price * slip_bps / 10000
-        fill = market_price + slip if req.side == "long" else market_price - slip
+    def _apply(self, event):
+        if event['kind'] == 'entry':
+            self.positions[event['symbol']] = event
+        elif event['kind'] == 'exit':
+            self.positions.pop(event['symbol'], None)
 
-        would_pnl = None
-        if actual_later_price:
-            would_pnl = (actual_later_price - fill) * req.qty if req.side == "long" else (fill - actual_later_price) * req.qty
+    def _record(self, event):
+        event['timestamp'] = datetime.now(timezone.utc).isoformat()
+        with self.path.open('a', encoding='utf-8') as f:
+            f.write(json.dumps(event, allow_nan=False) + '\n')
+        self.events.append(event)
+        self._apply(event)
 
-        record = ShadowFill(
-            symbol=req.symbol,
-            side=req.side,
-            qty=req.qty,
-            simulated_fill=round(fill, 4),
-            market_at_signal=market_price,
-            slippage_bps=slip_bps,
-            would_have_pnl=round(would_pnl, 2) if would_pnl else None,
-            missed=False,
-            strategy=req.strategy,
-            timestamp=datetime.now(timezone.utc).isoformat(),
-        )
-        self.fills.append(record)
-        self._persist(record)
-        audit("shadow_fill", symbol=req.symbol, fill=fill, slip_bps=slip_bps)
+    def simulate(self, req, market_price, actual_later_price=None):
+        if req.symbol in self.positions:
+            return OrderResult(req.client_order_id, '', OrderStatus.REJECTED, 0, 0, 0, 'Shadow position already open')
+        fill = market_price * (1 + self.cfg.shadow_slippage_bps / 10000)
+        self._record(dict(kind='entry', symbol=req.symbol, qty=req.qty, entry=fill,
+                          strategy=req.strategy, stop_loss=req.stop_price, take_profit=req.take_profit,
+                          client_order_id=req.client_order_id))
+        return OrderResult(req.client_order_id, 'SHADOW-' + req.client_order_id, OrderStatus.FILLED,
+                           req.qty, fill, self.cfg.shadow_slippage_bps, 'Shadow entry; outcome pending')
 
-        return OrderResult(
-            req.client_order_id, f"SHADOW-{len(self.fills)}",
-            OrderStatus.FILLED, req.qty, fill, slip_bps,
-            "Shadow simulated fill",
-        )
+    def simulate_exit(self, req, market_price):
+        pos = self.positions.get(req.symbol)
+        if not pos or req.qty != pos['qty']:
+            return OrderResult(req.client_order_id, '', OrderStatus.REJECTED, 0, 0, 0, 'Shadow position mismatch')
+        fill = market_price * (1 - self.cfg.shadow_slippage_bps / 10000)
+        costs = pos['entry'] * req.qty * self.cfg.estimated_round_trip_cost_bps / 10000
+        pnl = (fill - pos['entry']) * req.qty - costs
+        self._record(dict(kind='exit', symbol=req.symbol, qty=req.qty, exit=fill, pnl=pnl,
+                          strategy=pos['strategy'], entry_timestamp=pos['timestamp']))
+        return OrderResult(req.client_order_id, 'SHADOW-EXIT-' + req.client_order_id, OrderStatus.FILLED,
+                           req.qty, fill, self.cfg.shadow_slippage_bps, 'Shadow exit', raw={'net_pnl': pnl})
 
-    def record_missed(self, symbol: str, reason: str, market_price: float) -> None:
-        record = ShadowFill(
-            symbol=symbol, side="—", qty=0, simulated_fill=0,
-            market_at_signal=market_price, slippage_bps=0,
-            would_have_pnl=None, missed=True, strategy="—",
-            timestamp=datetime.now(timezone.utc).isoformat(),
-        )
-        self.fills.append(record)
-        audit("shadow_missed", symbol=symbol, reason=reason)
+    def record_missed(self, symbol, reason, market_price):
+        self._record(dict(kind='missed', symbol=symbol, reason=reason))
 
-    def _persist(self, record: ShadowFill) -> None:
-        day = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-        path = SHADOW_DIR / f"shadow_{day}.jsonl"
-        with path.open("a") as f:
-            f.write(json.dumps(asdict(record)) + "\n")
-
-    def weekly_report(self) -> dict:
-        fills = [f for f in self.fills if not f.missed]
-        missed = [f for f in self.fills if f.missed]
-        pnls = [f.would_have_pnl for f in fills if f.would_have_pnl is not None]
-        return {
-            "period": "weekly",
-            "simulated_fills": len(fills),
-            "missed_opportunities": len(missed),
-            "avg_slippage_bps": round(
-                sum(f.slippage_bps for f in fills) / len(fills), 2
-            ) if fills else 0,
-            "total_shadow_pnl": round(sum(pnls), 2) if pnls else 0,
-            "win_rate": round(
-                sum(1 for p in pnls if p > 0) / len(pnls) * 100, 1
-            ) if pnls else 0,
-        }
+    def weekly_report(self):
+        exits = [e for e in self.events if e['kind'] == 'exit']
+        entries = [e for e in self.events if e['kind'] == 'entry']
+        days = {e['timestamp'][:10] for e in entries + exits}
+        return dict(period='since_reset', simulated_fills=len(entries), completed_trades=len(exits),
+                    open_positions=len(self.positions), active_days=len(days),
+                    missed_opportunities=sum(e['kind'] == 'missed' for e in self.events),
+                    avg_slippage_bps=self.cfg.shadow_slippage_bps,
+                    total_shadow_pnl=round(sum(e['pnl'] for e in exits), 2),
+                    win_rate=100 * sum(e['pnl'] > 0 for e in exits) / len(exits) if exits else 0)

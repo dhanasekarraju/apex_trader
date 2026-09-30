@@ -95,7 +95,7 @@ class AdvancedRiskEngine(RiskEngine):
             failed = next(c for c in checks if not c.passed)
             return RiskDecision(RiskVerdict.REJECTED, 0, checks, reason=failed.detail)
 
-        qty = base.approved_qty * base.size_multiplier
+        qty = proposal.qty * base.size_multiplier
         verdict = RiskVerdict.REDUCED if base.size_multiplier < 1 else base.verdict
         return RiskDecision(verdict, qty, checks, base.reason, base.size_multiplier)
 

@@ -46,6 +46,7 @@ class ExecutionEngine:
         self._trades = TradeRepository()
         self._dlq = DeadLetterQueue()
         self._circuit = ApiCircuitBreaker()
+        self.order_lock = asyncio.Lock()
 
     def bind(self, portfolio: PortfolioManager, market_data: MarketDataService) -> None:
         self._portfolio = portfolio
@@ -134,6 +135,8 @@ class ExecutionEngine:
     async def place_order(self, req: OrderRequest, market_price: float) -> OrderResult:
         """Single entry point for order placement — executes risk-approved orders only."""
         cfg = get_settings()
+        if not req.stop_price or req.stop_price <= 0 or req.stop_price >= market_price or req.qty <= 0:
+            return OrderResult(req.client_order_id, "", OrderStatus.REJECTED, 0, 0, 0, "Valid protective stop and quantity required before entry")
 
         blocked = await self._pre_execution_block(req)
         if blocked:
@@ -141,7 +144,7 @@ class ExecutionEngine:
 
         if req.client_order_id:
             existing = await self._trades.get_by_client_id(req.client_order_id)
-            if existing and existing.status in ("filled", "sl_placed"):
+            if existing and existing.status in ("pending", "submitted", "unknown", "filled", "sl_placed"):
                 audit("duplicate_order_blocked", id=req.client_order_id)
                 return OrderResult(
                     req.client_order_id,
@@ -251,6 +254,10 @@ class ExecutionEngine:
                 req.client_order_id, "", OrderStatus.REJECTED, 0, 0, 0,
                 "Kill switch active — execution blocked",
             )
+        if get_settings().trading_mode == "live":
+            pending = await self._trades.open_trades()
+            if any(r.status in ("pending", "submitted", "unknown") for r in pending):
+                return OrderResult(req.client_order_id, "", OrderStatus.REJECTED, 0, 0, 0, "Unresolved broker order; new entries blocked")
         if self._circuit.is_open():
             remaining = self._circuit.pause_remaining_sec()
             return OrderResult(
@@ -277,6 +284,8 @@ class ExecutionEngine:
         status = status_map.get(result.status, "submitted")
         if result.raw.get("stop_order_id"):
             status = "sl_placed"
+        if result.raw.get("unknown"):
+            status = "unknown"
 
         if result.status in (OrderStatus.FAILED, OrderStatus.REJECTED):
             await self._dlq.enqueue(
@@ -356,17 +365,39 @@ class ExecutionEngine:
         cfg: Settings,
     ) -> OrderResult:
         entry = await self._place_with_retry(req, market_price, cfg)
-        if entry.status in (OrderStatus.FAILED, OrderStatus.REJECTED):
+        await self._record_result(req, entry)
+        if entry.status in (OrderStatus.REJECTED, OrderStatus.FAILED) or not entry.broker_order_id:
             return entry
-        if entry.broker_order_id:
-            entry = await with_timeout(
-                self._broker.reconcile_order(entry.broker_order_id, req),
-                seconds=cfg.external_api_timeout_sec,
-                label="kite_reconcile",
-            )
-        if entry.status not in (OrderStatus.FILLED, OrderStatus.PARTIAL):
+        try:
+            entry = await self._broker.reconcile_order(entry.broker_order_id, req, timeout_sec=cfg.external_api_timeout_sec)
+            if entry.status not in (OrderStatus.FILLED, OrderStatus.REJECTED):
+                await self._broker.cancel_order(entry.broker_order_id)
+                status = await self._broker.fetch_order_status(entry.broker_order_id)
+                if status.get("status") not in ("COMPLETE", "CANCELLED", "REJECTED"):
+                    await self._unknown(req, "Entry cancellation/fill outcome unknown")
+                    entry.raw["unknown"] = True
+                    if entry.filled_qty > 0:
+                        entry = await self._attach_stop_loss(req, entry, market_price, cfg)
+                    return entry
+                entry.filled_qty = float(status.get("filled_quantity") or 0)
+                entry.avg_price = float(status.get("average_price") or 0)
+                entry.status = OrderStatus.FILLED if entry.filled_qty else OrderStatus.REJECTED
+            if entry.filled_qty > 0:
+                return await self._attach_stop_loss(req, entry, market_price, cfg)
             return entry
-        return await self._attach_stop_loss(req, entry, market_price, cfg)
+        except (Exception, asyncio.CancelledError) as exc:
+            await self._unknown(req, f"Fill/protection outcome unknown: {exc}")
+            entry.raw["unknown"] = True
+            entry.status = OrderStatus.SUBMITTED
+            return entry
+
+    async def _unknown(self, req: OrderRequest, reason: str) -> None:
+        from services.control.reconciliation_state import set_reconciliation_degraded
+        await set_reconciliation_degraded(reason)
+        if self._portfolio:
+            self._portfolio.emergency_shutdown()
+            await self._portfolio.persist()
+        await self._trades.update_status(req.client_order_id, status="unknown", message=reason)
 
     async def _submit_with_stop(
         self,
@@ -390,6 +421,20 @@ class ExecutionEngine:
         market_price: float,
         cfg: Settings,
     ) -> OrderResult:
+        if cfg.trading_mode == "live":
+            try:
+                result = await with_timeout(self._broker.place_order(req, market_price),
+                                            seconds=cfg.external_api_timeout_sec, label="broker_submit_once")
+                if result.status == OrderStatus.FAILED:
+                    result.status = OrderStatus.SUBMITTED
+                    result.raw["unknown"] = True
+                if result.raw.get("unknown"):
+                    await self._unknown(req, result.message)
+                return result
+            except (Exception, asyncio.CancelledError) as exc:
+                await self._unknown(req, f"Submission outcome unknown: {exc}")
+                return OrderResult(req.client_order_id, "", OrderStatus.SUBMITTED, 0, 0, 0,
+                                   "Submission outcome unknown; reconciliation required", raw={"unknown": True})
         last: OrderResult | None = None
         for attempt in range(1, self.max_retries + 1):
             try:
@@ -456,191 +501,150 @@ class ExecutionEngine:
             sl = OrderResult(
                 req.client_order_id, "", OrderStatus.FAILED, 0, 0, 0, str(e),
             )
-        if sl.status in (OrderStatus.FAILED, OrderStatus.REJECTED):
-            audit("stop_loss_failed", symbol=req.symbol, reason=sl.message)
-            if hasattr(self._broker, "flatten_symbol"):
-                await self._broker.flatten_symbol(req.symbol)
-            else:
-                await self._broker.flatten_all()
-            if cfg.trading_mode == "live":
-                return OrderResult(
-                    req.client_order_id,
-                    entry.broker_order_id,
-                    OrderStatus.REJECTED,
-                    0,
-                    0,
-                    0,
-                    f"Stop-loss failed — entry flattened: {sl.message}",
-                )
-            return OrderResult(
-                req.client_order_id,
-                entry.broker_order_id,
-                OrderStatus.REJECTED,
-                0,
-                0,
-                0,
-                f"Stop-loss failed — entry flattened: {sl.message}",
-            )
+        if sl.broker_order_id:
+            entry.raw["stop_order_id"] = sl.broker_order_id
+        if cfg.trading_mode == "live" and sl.broker_order_id:
+            status = await self._broker.fetch_order_status(sl.broker_order_id)
+            if status.get("status") not in ("OPEN", "TRIGGER PENDING") or float(status.get("filled_quantity") or 0) > 0:
+                sl.status = OrderStatus.FAILED
+                sl.message = "Protective stop not confirmed working; review broker immediately"
+        if sl.status in (OrderStatus.FAILED, OrderStatus.REJECTED) or not sl.broker_order_id:
+            await self._unknown(req, f"Unprotected fill: {sl.message}")
+            entry.message = "UNPROTECTED FILL — halted; broker review / emergency exit required"
+            entry.raw["unknown"] = True
+            return entry
         entry.raw["stop_order_id"] = sl.broker_order_id
         entry.message = f"{entry.message}; SL {sl.broker_order_id}"
         audit("stop_loss_attached", symbol=req.symbol, stop_order=sl.broker_order_id)
         return entry
 
-    async def place_exit(
-        self,
-        *,
-        symbol: str,
-        qty: float,
-        reason: str,
-        market_price: float,
-        strategy: str = "exit",
-    ) -> OrderResult:
-        """Single entry point for all sell/exit orders."""
-        from services.execution.idempotency import make_order_id
+    async def place_exit(self, *, symbol: str, qty: float, reason: str,
+                         market_price: float, strategy: str = "exit") -> OrderResult:
+        try:
+            return await self._place_exit(symbol=symbol, qty=qty, reason=reason,
+                                          market_price=market_price, strategy=strategy)
+        except (Exception, asyncio.CancelledError) as exc:
+            request = OrderRequest(symbol, "short", qty, OrderType.MARKET, client_order_id="")
+            await self._unknown(request, f"Exit outcome unknown: {exc}")
+            return OrderResult("", "", OrderStatus.SUBMITTED, 0, 0, 0,
+                               "Exit unresolved; broker review required", raw={"unknown": True})
 
+    async def _place_exit(self, *, symbol: str, qty: float, reason: str,
+                         market_price: float, strategy: str = "exit") -> OrderResult:
+        """Reduce exposure even when entry gates halt. Caller holds order_lock."""
+        import uuid
         cfg = get_settings()
-
+        pos = next((p for p in self._portfolio.state.positions if p.symbol.upper() == symbol.upper()), None) if self._portfolio else None
+        if pos is None or qty <= 0 or qty > pos.qty:
+            return OrderResult("", "", OrderStatus.REJECTED, 0, 0, 0, "No matching position/valid exit quantity")
+        req = OrderRequest(symbol.upper(), "short", int(qty), OrderType.MARKET,
+                           strategy=strategy, client_order_id="exit-" + uuid.uuid4().hex[:15])
         if cfg.trading_mode == "shadow":
-            return OrderResult(
-                "", "", OrderStatus.REJECTED, 0, 0, 0, "Shadow mode — no exits on broker",
-            )
-
-        sell_qty = max(1, int(qty))
-        client_id = make_order_id(symbol, strategy, side="sell")
-        req = OrderRequest(
-            symbol=symbol.upper(),
-            side="short",
-            qty=sell_qty,
-            order_type=OrderType.MARKET,
-            strategy=strategy,
-            client_order_id=f"{client_id}-{reason}",
-            metadata={"exit_reason": reason},
-        )
-        blocked = await self._pre_execution_block(req)
-        if blocked:
-            return blocked
-
-        trade_log(
-            symbol=symbol,
-            strategy=strategy,
-            action="SELL",
-            result="submit",
-            reason=reason,
-            qty=sell_qty,
-        )
-
+            return self._shadow.simulate_exit(req, market_price)
         if cfg.trading_mode == "live":
-            result = await self._place_with_retry(req, market_price, cfg)
+            rows = await self._trades.open_trades()
+            if any(r.symbol == req.symbol and r.side == "short" and r.status in ("pending", "submitted", "unknown") for r in rows):
+                return OrderResult(req.client_order_id, "", OrderStatus.REJECTED, 0, 0, 0, "Unresolved exit; reconcile before retry")
+            await self._trades.create_pending(client_order_id=req.client_order_id, symbol=req.symbol,
+                strategy=strategy, side="short", qty=req.qty, stop_loss=None, take_profit=None, trading_mode="live")
+            if pos.stop_order_id:
+                await self._broker.cancel_order(pos.stop_order_id)
+                stop = await self._broker.fetch_order_status(pos.stop_order_id)
+                if stop.get("status") not in ("CANCELLED", "COMPLETE", "REJECTED"):
+                    await self._unknown(req, "Cannot confirm stop cancellation; exit withheld to prevent double sell")
+                    return OrderResult(req.client_order_id, "", OrderStatus.REJECTED, 0, 0, 0, "Stop cancellation unknown")
+                stop_qty = float(stop.get("filled_quantity") or 0)
+                if stop_qty > 0:
+                    executed_stop_id = pos.stop_order_id
+                    pos.stop_order_id = ""
+                    await self._portfolio.persist()
+                    await self._unknown(req, "Stop filled during exit cancellation; residual protection requires review")
+                    # Do not submit a second sell against an already executed stop.
+                    return OrderResult(req.client_order_id, executed_stop_id, OrderStatus.PARTIAL,
+                                       min(stop_qty, pos.qty), float(stop.get("average_price") or 0), 0,
+                                       "Stop filled during cancellation", raw={"stop_fill": True})
+                pos.stop_order_id = ""
+            positions = await self._broker.fetch_open_positions()
+            matching = [p for p in positions if p["symbol"].upper() == req.symbol]
+            if len(matching) != 1 or matching[0].get("side", "long") != "long" or abs(float(matching[0]["qty"]) - pos.qty) > 0.0001:
+                await self._unknown(req, "Exit broker quantity mismatch; no sell submitted")
+                return OrderResult(req.client_order_id, "", OrderStatus.REJECTED, 0, 0, 0, "Exit quantity mismatch")
+            req.metadata = {k: matching[0][k] for k in ("product", "exchange") if k in matching[0]}
+
+        result = await self._place_with_retry(req, market_price, cfg)
+        if cfg.trading_mode == "live":
+            await self._record_result(req, result)
             if result.broker_order_id:
-                result = await with_timeout(
-                    self._broker.reconcile_order(result.broker_order_id, req),
-                    seconds=cfg.external_api_timeout_sec,
-                    label="exit_reconcile",
-                )
-        else:
-            result = await self._place_with_retry(req, market_price, cfg)
-
-        from services.compliance.events import EventType
-        from services.compliance.recorder import crce
-
-        pos = next(
-            (p for p in (self._portfolio.state.positions if self._portfolio else []) if p.symbol.upper() == symbol.upper()),
-            None,
-        )
-        await crce.record(
-            event_type=EventType.ORDER_EXITED,
-            action="PLACE_EXIT",
-            symbol=symbol,
-            decision="EXECUTED" if result.status.value in ("filled", "partial") else "FAILED",
-            reason=reason,
-            portfolio=self._portfolio,
-            exit_price=result.avg_price or market_price,
-            exit_reason=reason,
-            expected_stop_loss=pos.stop_loss if pos else None,
-            qty=sell_qty,
-        )
+                result = await self._broker.reconcile_order(result.broker_order_id, req, timeout_sec=cfg.external_api_timeout_sec)
+                if result.status not in (OrderStatus.FILLED, OrderStatus.REJECTED):
+                    await self._broker.cancel_order(result.broker_order_id)
+                    status = await self._broker.fetch_order_status(result.broker_order_id)
+                    if status.get("status") not in ("CANCELLED", "COMPLETE", "REJECTED"):
+                        await self._unknown(req, "Exit still pending; quantity cannot be accounted safely")
+                        return OrderResult(req.client_order_id, result.broker_order_id, OrderStatus.SUBMITTED, 0, 0, 0, "Exit unresolved", raw={"unknown": True})
+                    result.filled_qty = float(status.get("filled_quantity") or 0)
+                    result.avg_price = float(status.get("average_price") or 0)
+                    result.status = OrderStatus.PARTIAL if result.filled_qty else OrderStatus.REJECTED
+            if result.raw.get("unknown") or result.status == OrderStatus.SUBMITTED:
+                await self._unknown(req, "Exit outcome unknown; manual broker reconciliation required")
+            else:
+                await self._trades.update_status(req.client_order_id, status="closed", exit_price=result.avg_price)
+                residual = pos.qty - result.filled_qty
+                if residual > 0:
+                    protective = OrderRequest(req.symbol, "long", residual, OrderType.MARKET,
+                                              stop_price=pos.stop_loss, client_order_id=req.client_order_id + "-r")
+                    fill = OrderResult(protective.client_order_id, "", OrderStatus.FILLED, residual, pos.entry, 0, "Residual protection")
+                    protected = await self._attach_stop_loss(protective, fill, market_price, cfg)
+                    pos.stop_order_id = protected.raw.get("stop_order_id", "")
         return result
 
     async def activate_kill_switch(self) -> dict:
-        """Global emergency: halt, cancel, flatten, persist with PnL accounting."""
         if self._portfolio:
             self._portfolio.emergency_shutdown()
             await self._portfolio.persist()
-        positions = list(self._portfolio.state.positions) if self._portfolio else []
-        cancelled = await self.cancel_all()
-        flattened = await self.flatten_all()
-        if self._portfolio:
-            for pos in positions:
-                exit_price = await self._resolve_flatten_price(pos.symbol, pos.entry)
-                pnl = (exit_price - pos.entry) * pos.qty
-                await self._portfolio.record_exit(
-                    symbol=pos.symbol,
-                    exit_price=exit_price,
-                    exit_reason="kill_switch_flatten",
-                    pnl=pnl,
-                )
-            if self._portfolio.state.positions:
-                await self._portfolio.clear_after_flatten()
-            await self._portfolio.persist()
-        audit("kill_switch_activated", cancelled=cancelled, flattened=flattened)
-        return {
-            "halted": True,
-            "cancelled": cancelled,
-            "flattened": flattened,
-        }
-
-    async def _resolve_flatten_price(self, symbol: str, fallback: float) -> float:
-        if self._market_data is None:
-            return fallback
-        try:
-            if self._market_data.has_real_data_configured():
-                ltps = await self._market_data.fetch_ltps([symbol.upper()])
-                price = ltps.get(symbol.upper(), 0.0)
-                if price > 0:
-                    return price
-            df = self._market_data.synthetic_ohlcv(symbol, bars=3)
-            return float(df["close"].iloc[-1])
-        except Exception:
-            return fallback
+        result = await self.eod_square_off("kill_switch_flatten")
+        return {**result, "halted": True}
 
     async def eod_square_off(self, reason: str = "mis_eod_square_off") -> dict:
-        """Flatten open book at MIS cutoff without latching the kill switch.
-
-        Stops new entries for the day via autonomous stop (caller), cancels
-        open orders, flattens positions, and accounts exits in the portfolio.
-        """
-        positions = list(self._portfolio.state.positions) if self._portfolio else []
-        cancelled = await self.cancel_all()
-        flattened = await self.flatten_all()
-        accounted = 0
-        if self._portfolio:
-            for pos in positions:
-                exit_price = await self._resolve_flatten_price(pos.symbol, pos.entry)
-                pnl = (exit_price - pos.entry) * pos.qty
-                await self._portfolio.record_exit(
-                    symbol=pos.symbol,
-                    exit_price=exit_price,
-                    exit_reason=reason,
-                    pnl=pnl,
-                )
-                accounted += 1
-            if self._portfolio.state.positions:
-                await self._portfolio.clear_after_flatten()
-            await self._portfolio.persist()
-        audit(
-            "mis_eod_square_off",
-            cancelled=cancelled,
-            flattened=flattened,
-            accounted=accounted,
-            reason=reason,
-        )
-        return {
-            "ok": True,
-            "cancelled": cancelled,
-            "flattened": flattened,
-            "accounted": accounted,
-            "reason": reason,
-        }
+        """Retain unresolved exposure and only book broker-confirmed fills."""
+        async with self.order_lock:
+            accounted = 0
+            errors = []
+            if not self._portfolio:
+                return {"ok": False, "flattened": 0, "cancelled": 0, "accounted": 0, "reason": "No portfolio"}
+            for pos in list(self._portfolio.state.positions):
+                try:
+                    prices = await self._market_data.fetch_ltps([pos.symbol]) if self._market_data else {}
+                    result = await self.place_exit(symbol=pos.symbol, qty=pos.qty, reason=reason,
+                                                   market_price=prices.get(pos.symbol, pos.entry))
+                    if result.status in (OrderStatus.FILLED, OrderStatus.PARTIAL) and result.filled_qty > 0 and result.avg_price > 0:
+                        await self._portfolio.record_exit(symbol=pos.symbol, qty=result.filled_qty,
+                            exit_price=result.avg_price, exit_reason=reason,
+                            pnl=(result.avg_price - pos.entry) * result.filled_qty - pos.entry * result.filled_qty * get_settings().estimated_round_trip_cost_bps / 10000)
+                        if pos.qty <= 0:
+                            row = await self._trades.get_open_by_symbol(pos.symbol)
+                            if row:
+                                await self._trades.update_status(row.client_order_id, status="closed", exit_price=result.avg_price, exit_reason=reason)
+                        accounted += 1
+                    else:
+                        errors.append(f"{pos.symbol}: {result.message}")
+                except Exception as exc:
+                    errors.append(f"{pos.symbol}: {exc}")
+            remaining = []
+            if get_settings().trading_mode == "live":
+                unresolved = [r for r in await self._trades.open_trades() if r.status in ("pending", "submitted", "unknown")]
+                if unresolved:
+                    errors.append("Unresolved order intents remain; account cannot be declared flat")
+                try:
+                    remaining = await self._broker.fetch_open_positions()
+                except Exception as exc:
+                    errors.append(f"Broker closure unverified: {exc}")
+            ok = not errors and not remaining and not self._portfolio.state.positions
+            if not ok:
+                self._portfolio.emergency_shutdown()
+                await self._portfolio.persist()
+            return {"ok": ok, "cancelled": 0, "flattened": accounted, "accounted": accounted,
+                    "remaining_positions": remaining, "errors": errors, "reason": reason}
 
     async def flatten_all(self) -> int:
         if self.cfg.trading_mode == "shadow":

@@ -46,47 +46,61 @@ class BacktestEngine:
         max_dd = 0.0
         returns: list[float] = []
 
-        window = 60
-        for i in range(window, len(df) - 1, 5):
-            slice_df = df.iloc[: i + 1].copy()
-            regime = self.regime.analyze(slice_df)
+        from services.sizing.engine import PositionSizingEngine, SizeInput
+        from shared.config import get_settings
+        cfg = get_settings()
+        sizing = PositionSizingEngine()
+        next_entry = 60
+        daily_returns = {}
+        for i in range(60, len(df) - 1):
+            if i < next_entry:
+                continue
+            regime = self.regime.analyze(df.iloc[:i + 1])
             if not regime.trade_allowed:
                 continue
-
             allowed = [strategy_name] if strategy_name else regime.recommended_strategies
-            signals = self.strategies.scan(
-                symbol, slice_df, regime.regime.value, allowed=allowed or None
-            )
+            signals = self.strategies.scan(symbol, df.iloc[:i + 1], regime.regime.value, allowed=allowed or None)
             if not signals:
                 continue
-
             sig = signals[0]
-            entry = sig.entry * (1 + self.SLIPPAGE_BPS / 10000)
-            exit_px = float(df["close"].iloc[min(i + 5, len(df) - 1)])
-
-            if exit_px <= sig.stop_loss:
-                exit_px = sig.stop_loss
-                win = False
-            elif exit_px >= sig.take_profit:
-                exit_px = sig.take_profit
-                win = True
-            else:
-                win = exit_px > entry
-
-            pnl_pct = (exit_px - entry) / entry * 100 - self.COMMISSION_PCT * 2
-            equity *= 1 + pnl_pct / 100
+            # Signals use a completed candle; enter on the next bar, with adverse slip.
+            entry = float(df["open"].iloc[i + 1]) * (1 + self.SLIPPAGE_BPS / 10000)
+            if not 0 < sig.stop_loss < entry < sig.take_profit:
+                continue
+            cost = entry * (cfg.estimated_round_trip_cost_bps + cfg.estimated_exit_slippage_bps) / 10000
+            if (sig.take_profit - entry - cost) / (entry - sig.stop_loss + cost) < cfg.min_net_reward_risk:
+                continue
+            sized = sizing.compute(SizeInput(equity=equity, cash=equity, entry=entry, stop_loss=sig.stop_loss))
+            if sized.qty <= 0:
+                continue
+            end = min(i + 5, len(df) - 1)
+            exit_px = float(df['close'].iloc[end])
+            reason = 'time_exit'
+            for j in range(i + 1, end + 1):
+                bar = df.iloc[j]
+                if float(bar['open']) <= sig.stop_loss:
+                    exit_px, end, reason = float(bar['open']), j, 'gap_stop'
+                    break
+                if float(bar['low']) <= sig.stop_loss:
+                    # Stop first when both boundaries occur in one candle.
+                    exit_px, end, reason = sig.stop_loss, j, 'stop'
+                    break
+                if float(bar['high']) >= sig.take_profit:
+                    exit_px, end, reason = sig.take_profit, j, 'target'
+                    break
+            exit_px *= 1 - cfg.estimated_exit_slippage_bps / 10000
+            costs = entry * sized.qty * cfg.estimated_round_trip_cost_bps / 10000
+            pnl = (exit_px - entry) * sized.qty - costs
+            pnl_pct = pnl / equity * 100
+            equity += pnl
             peak = max(peak, equity)
-            dd = (peak - equity) / peak * 100
-            max_dd = max(max_dd, dd)
-            returns.append(pnl_pct)
-
-            trades.append({
-                "entry": entry,
-                "exit": exit_px,
-                "pnl_pct": round(pnl_pct, 3),
-                "win": win,
-                "strategy": sig.strategy,
-            })
+            max_dd = max(max_dd, (peak - equity) / peak * 100)
+            key = str(df.index[end])[:10]
+            daily_returns[key] = daily_returns.get(key, 0) + pnl_pct
+            trades.append(dict(entry=entry, exit=exit_px, qty=sized.qty, pnl=pnl,
+                               pnl_pct=pnl_pct, win=pnl > 0, strategy=sig.strategy, exit_reason=reason))
+            next_entry = end + 1
+        returns = list(daily_returns.values())
 
         wins = sum(1 for t in trades if t["win"])
         total = len(trades)
@@ -108,18 +122,18 @@ class BacktestEngine:
             sortino=round(sortino, 2),
             max_drawdown=round(max_dd, 2),
             passed_stress=passed,
-            trades=trades[-20:],
+            trades=trades,
         )
 
     @staticmethod
     def _sharpe(rets: pd.Series) -> float:
-        if rets.empty or rets.std() == 0:
+        if len(rets) < 2 or rets.std() == 0:
             return 0.0
         return float(rets.mean() / rets.std() * np.sqrt(252))
 
     @staticmethod
     def _sortino(rets: pd.Series) -> float:
         downside = rets[rets < 0]
-        if downside.empty or downside.std() == 0:
+        if len(downside) < 2 or downside.std() == 0:
             return 0.0
         return float(rets.mean() / downside.std() * np.sqrt(252))

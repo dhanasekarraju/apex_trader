@@ -77,8 +77,10 @@ class KiteBroker(BrokerAdapter):
             )
         except Exception as e:
             audit("kite_order_failed", symbol=req.symbol, error=str(e))
+            # A transport failure may occur after acceptance. Never label it rejected.
             return OrderResult(
-                req.client_order_id, "", OrderStatus.REJECTED, 0, 0, 0, str(e),
+                req.client_order_id, "", OrderStatus.SUBMITTED, 0, 0, 0,
+                f"Submission outcome unknown: {e}", raw={"unknown": True},
             )
 
     async def reconcile_order(
@@ -165,8 +167,8 @@ class KiteBroker(BrokerAdapter):
             )
             return last_partial
         return OrderResult(
-            req.client_order_id, broker_order_id, OrderStatus.FAILED,
-            0, 0, 0, "Reconciliation timeout",
+            req.client_order_id, broker_order_id, OrderStatus.SUBMITTED,
+            0, 0, 0, "Reconciliation pending; do not resubmit", raw={"unknown": True},
         )
 
     async def place_stop_loss(
@@ -362,13 +364,13 @@ class KiteBroker(BrokerAdapter):
 
     async def fetch_open_positions(self) -> list[dict]:
         if not self._kite:
-            return []
+            raise ConnectionError("Kite is not connected; positions are unknown")
         loop = asyncio.get_event_loop()
         try:
             positions_resp = await loop.run_in_executor(None, self._kite.positions)
         except Exception as e:
             audit("kite_positions_failed", error=str(e))
-            return []
+            raise ConnectionError("Kite positions unavailable") from e
         out: list[dict] = []
         for pos in self._net_positions(positions_resp):
             qty = int(pos.get("quantity", 0))
@@ -405,6 +407,8 @@ class KiteBroker(BrokerAdapter):
                 "status": last.get("status", "UNKNOWN"),
                 "average_price": float(last.get("average_price") or 0),
                 "filled_quantity": float(last.get("filled_quantity") or 0),
+                "pending_quantity": float(last.get("pending_quantity") or 0),
+                "quantity": float(last.get("quantity") or 0),
             }
         except Exception as e:
             audit("kite_order_status_failed", order_id=broker_order_id, error=str(e))
@@ -459,22 +463,14 @@ class KiteBroker(BrokerAdapter):
             adhoc = float(available.get("adhoc_margin") or 0)
             intraday_payin = float(available.get("intraday_payin") or 0)
 
-            liquid_cash = live_balance or cash or net
-            # Kite `net` = total margin available (cash + collateral + credits − debits).
-            buying_power = max(net, liquid_cash + collateral + adhoc + intraday_payin)
+            liquid_cash = max(0.0, float(available.get("live_balance", cash)))
+            buying_power = max(0.0, min(net, liquid_cash))
+            # Available margin is not total account equity. Preserve the configured
+            # capital ledger; sync only spendable funds to avoid margin-driven sizing.
+            equity = max(0.0, net)
+            if net < 0:
+                return {"ok": False, "error": "negative_available_margin"}
 
-            cfg = get_settings()
-            if (
-                cfg.kite_product.upper() == "MIS"
-                and cfg.mis_sizing_leverage > 1.0
-                and buying_power <= liquid_cash * 1.05
-            ):
-                buying_power = max(buying_power, liquid_cash * cfg.mis_sizing_leverage)
-
-            if net <= 0 and buying_power <= 0:
-                return {"ok": False, "error": "zero_equity", "raw": eq}
-
-            equity = net if net > 0 else buying_power
             return {
                 "ok": True,
                 "equity": round(equity, 2),

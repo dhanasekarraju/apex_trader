@@ -83,11 +83,11 @@ def test_autonomous_status_requires_auth(api_client):
     assert r.status_code == 401
 
 
-def test_kite_login_accepts_query_api_key(api_client, api_headers, monkeypatch):
+def test_kite_login_accepts_authenticated_header(api_client, api_headers, monkeypatch):
     with patch("services.brokers.kite_auth.kite_auth.login_url", return_value="https://kite.zerodha.com/connect/login?v=3"):
         r = api_client.get(
             "/api/kite/login",
-            params={"api_key": api_headers["X-API-Key"]},
+            headers=api_headers,
             follow_redirects=False,
         )
     assert r.status_code in (302, 307)
@@ -216,7 +216,7 @@ async def test_reconciliation_does_not_wipe_on_broker_failure(monkeypatch):
         broker=broker,
         portfolio=portfolio,
         trades=trades,
-        trading_mode="paper",
+        trading_mode="live",
     )
 
     assert report["reconciliation_status"] == "DEGRADED"

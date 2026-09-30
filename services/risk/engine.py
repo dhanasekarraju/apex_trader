@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
@@ -91,6 +92,18 @@ class RiskEngine:
         def chk(name: str, ok: bool, detail: str) -> bool:
             checks.append(RiskCheck(name, bool(ok), detail))
             return bool(ok)
+
+        numbers = (proposal.entry, proposal.stop_loss, proposal.take_profit, proposal.qty, state.equity)
+        if not all(math.isfinite(v) and v > 0 for v in numbers) or not proposal.stop_loss < proposal.entry < proposal.take_profit:
+            return RiskDecision(RiskVerdict.REJECTED, 0, checks, reason="Invalid entry, stop, target, quantity or equity")
+        cost = proposal.entry * self.cfg.estimated_round_trip_cost_bps / 10000
+        slippage = proposal.entry * self.cfg.estimated_exit_slippage_bps / 10000
+        stressed_loss = proposal.entry - proposal.stop_loss + cost + slippage
+        net_reward = proposal.take_profit - proposal.entry - cost - slippage
+        chk("net_reward_risk", net_reward / stressed_loss >= self.cfg.min_net_reward_risk,
+            f"Net reward/risk {net_reward / stressed_loss:.2f} vs minimum {self.cfg.min_net_reward_risk:.2f}")
+        chk("remaining_daily_budget", stressed_loss * proposal.qty <= max(0, state.equity * self.cfg.max_daily_loss_pct / 100 + min(0, state.daily_pnl)),
+            "New trade must fit remaining daily loss budget including estimated costs")
 
         if state.emergency_halt:
             return RiskDecision(

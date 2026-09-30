@@ -46,6 +46,8 @@ class TradeRepository:
                 await session.commit()
         except Exception as e:
             audit("trade_record_create_failed", error=str(e), order_id=client_order_id)
+            if trading_mode == "live":
+                raise
 
     async def update_status(
         self,
@@ -85,6 +87,9 @@ class TradeRepository:
                 await session.commit()
         except Exception as e:
             audit("trade_record_update_failed", error=str(e), order_id=client_order_id)
+            from shared.config import get_settings
+            if get_settings().trading_mode == "live":
+                raise
 
     async def get_by_client_id(self, client_order_id: str) -> TradeRecord | None:
         async with SessionLocal() as session:
@@ -94,7 +99,7 @@ class TradeRepository:
             return result.scalar_one_or_none()
 
     async def open_trades(self) -> list[TradeRecord]:
-        open_status = {"pending", "submitted", "filled", "sl_placed"}
+        open_status = {"pending", "submitted", "unknown", "filled", "sl_placed"}
         async with SessionLocal() as session:
             result = await session.execute(
                 select(TradeRecord).where(TradeRecord.status.in_(open_status))
@@ -102,11 +107,12 @@ class TradeRepository:
             return list(result.scalars().all())
 
     async def get_open_by_symbol(self, symbol: str) -> TradeRecord | None:
-        open_status = {"pending", "submitted", "filled", "sl_placed"}
+        open_status = {"pending", "submitted", "unknown", "filled", "sl_placed"}
         async with SessionLocal() as session:
             result = await session.execute(
                 select(TradeRecord)
                 .where(TradeRecord.symbol == symbol.upper())
+                .where(TradeRecord.side == "long")
                 .where(TradeRecord.status.in_(open_status))
                 .order_by(TradeRecord.created_at.desc())
                 .limit(1)

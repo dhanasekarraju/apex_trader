@@ -70,6 +70,13 @@ class PortfolioRepository:
                     row = SystemState(id=self._SINGLETON_ID)
                     session.add(row)
                 await self._flush_state(session, row, state)
+                for pos in state.positions:
+                    if pos.db_id:
+                        stored = await session.get(Position, pos.db_id)
+                        if stored and stored.status == "open":
+                            stored.qty = pos.qty
+                            stored.stop_order_id = pos.stop_order_id
+                            stored.risk_pct = pos.risk_pct
                 await session.commit()
                 return True
         except Exception as e:
@@ -107,6 +114,13 @@ class PortfolioRepository:
                 row = await session.get(SystemState, self._SINGLETON_ID)
                 if row:
                     await self._flush_state(session, row, state)
+                for pos in state.positions:
+                    if pos.db_id:
+                        stored = await session.get(Position, pos.db_id)
+                        if stored and stored.status == "open":
+                            stored.qty = pos.qty
+                            stored.stop_order_id = pos.stop_order_id
+                            stored.risk_pct = pos.risk_pct
                 await session.commit()
                 return True
         except Exception as e:
@@ -152,16 +166,19 @@ class PortfolioRepository:
                 db_pos = result.scalar_one_or_none()
                 if db_pos is None:
                     return False
-                db_pos.status = "closed"
+                remaining = next((p for p in state.positions if p.symbol.upper() == symbol.upper()), None)
+                db_pos.status = "open" if remaining else "closed"
+                if remaining:
+                    db_pos.qty = remaining.qty
+                    db_pos.risk_pct = remaining.risk_pct
+                    db_pos.stop_order_id = remaining.stop_order_id
                 db_pos.exit_reason = exit_reason
-                db_pos.pnl = pnl
+                db_pos.pnl = (db_pos.pnl or 0) + pnl
                 db_pos.closed_at = __import__("datetime").datetime.now(
                     __import__("datetime").timezone.utc
                 )
 
-                state.positions = [
-                    p for p in state.positions if p.symbol.upper() != symbol.upper()
-                ]
+                # In-memory quantity was already reduced by the confirmed fill.
                 row = await session.get(SystemState, self._SINGLETON_ID)
                 if row:
                     await self._flush_state(session, row, state)

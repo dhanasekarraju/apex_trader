@@ -53,7 +53,7 @@ class ProfessionalBacktester:
 
         gross_profit = sum(t["pnl_pct"] for t in base.trades if t["pnl_pct"] > 0)
         gross_loss = abs(sum(t["pnl_pct"] for t in base.trades if t["pnl_pct"] < 0))
-        pf = gross_profit / gross_loss if gross_loss else 0
+        pf = gross_profit / gross_loss if gross_loss else (999.0 if gross_profit else 0.0)
 
         wins = [t["pnl_pct"] for t in base.trades if t["win"]]
         losses = [t["pnl_pct"] for t in base.trades if not t["win"]]
@@ -80,6 +80,10 @@ class ProfessionalBacktester:
         if not mc_pass:
             reasons.append("Monte Carlo stress failed")
 
+        if base.total_trades < self.cfg.golive_min_completed_trades:
+            reasons.append("Insufficient completed trades")
+        if expectancy <= 0:
+            reasons.append("Net expectancy must be positive")
         passed = len(reasons) == 0
 
         return ProBacktestResult(
@@ -106,15 +110,18 @@ class ProfessionalBacktester:
         mid = len(df) // 2
         in_sample = self.base.run(symbol, df.iloc[:mid], strategy)
         out_sample = self.base.run(symbol, df.iloc[mid:], strategy)
-        return bool(in_sample.net_return_pct > 0 and out_sample.max_drawdown < 12)
+        return bool(in_sample.net_return_pct > 0 and out_sample.net_return_pct > 0
+                    and out_sample.total_trades >= self.cfg.golive_min_completed_trades
+                    and out_sample.max_drawdown <= self.cfg.golive_max_drawdown)
 
     def _monte_carlo(self, trades: list[dict], sims: int = 200) -> bool:
         if len(trades) < 5:
             return False
         pnls = [t["pnl_pct"] for t in trades]
         max_dds = []
+        rng = np.random.default_rng(42)
         for _ in range(sims):
-            shuffled = np.random.choice(pnls, size=len(pnls), replace=True)
+            shuffled = rng.choice(pnls, size=len(pnls), replace=True)
             equity = 100.0
             peak = 100.0
             max_dd = 0.0

@@ -83,7 +83,7 @@ class UnifiedRiskEngine(AdvancedRiskEngine):
 
         pre_ok, pre_msg, qty = await self._validate_entry(
             symbol=proposal.symbol,
-            qty=advanced.approved_qty * advanced.size_multiplier * throttle,
+            qty=advanced.approved_qty * throttle,
             entry=proposal.entry,
             stop_loss=proposal.stop_loss,
             portfolio=portfolio,
@@ -181,6 +181,8 @@ class UnifiedRiskEngine(AdvancedRiskEngine):
             ltps = await market_data.fetch_ltps([symbol])
             if symbol in ltps and ltps[symbol] > 0:
                 return ltps[symbol]
+        if get_settings().trading_mode in ("live", "shadow"):
+            raise RuntimeError("Real quote unavailable; entry blocked")
         try:
             df = market_data.synthetic_ohlcv(symbol, bars=5)
             return float(df["close"].iloc[-1])

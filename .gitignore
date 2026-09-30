@@ -21,3 +21,7 @@ data/shadow/
 !data/watchlist.yaml
 
 !.env.example
+
+.pytest_cache/
+pytest-cache-files-*/
+data/validation/

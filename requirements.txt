@@ -20,3 +20,6 @@ pytest-asyncio>=0.23.0
 kiteconnect>=5.0.0
 ccxt>=4.0.0
 # ib_insync>=0.9.86  # Interactive Brokers — optional
+
+aiosqlite>=0.20.0
+fakeredis>=2.23.0
