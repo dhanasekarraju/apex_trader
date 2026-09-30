@@ -74,7 +74,7 @@ CHAOS_SCENARIOS: list[ChaosScenario] = [
     # D. System failure modes
     ChaosScenario("system_icb_delay", "ICB delayed response", ScenarioCategory.SYSTEM,
                   seed=401, latency_profile=LatencyProfile.CRITICAL,
-                  fault_config={"icb_delay_ms": 6000}, expect_deny=True),
+                  fault_config={"icb_delay_ms": 30000}, expect_deny=True),
     ChaosScenario("system_risk_timeout", "Risk engine timeout", ScenarioCategory.SYSTEM,
                   seed=402, fault_config={"risk_timeout": True}, expect_deny=True),
     ChaosScenario("system_crce_failure", "CRCE write failure", ScenarioCategory.SYSTEM,
