@@ -19,6 +19,8 @@ async def set_reconciliation_degraded(reason: str) -> None:
         await cache_set(STATUS_KEY, json.dumps(payload), ttl=86400)
     except Exception as e:
         audit("reconciliation_cache_fallback", error=str(e))
+    from services.icb.signals import invalidate_signals_cache
+    invalidate_signals_cache()
     audit("reconciliation_degraded", reason=reason)
 
 
@@ -29,6 +31,8 @@ async def clear_reconciliation_degraded() -> None:
         await cache_set(STATUS_KEY, json.dumps({"status": "OK"}), ttl=86400)
     except Exception:
         pass
+    from services.icb.signals import invalidate_signals_cache
+    invalidate_signals_cache()
     audit("reconciliation_ok")
 
 
