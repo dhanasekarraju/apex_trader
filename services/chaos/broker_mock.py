@@ -115,6 +115,9 @@ class ChaosBroker(BrokerAdapter):
         if self._mode == "partial_fill":
             ratio = float(self._cfg.get("fill_ratio", 0.5))
             filled = max(1, int(req.qty * ratio))
+            for position in self._inner._open_positions:
+                if position.get("order_id") == result.broker_order_id:
+                    position["qty"] = filled
             result = OrderResult(
                 result.client_order_id,
                 result.broker_order_id,
@@ -160,7 +163,14 @@ class ChaosBroker(BrokerAdapter):
                 extra = dict(positions[0])
                 extra["symbol"] = "PHANTOM"
                 extra["qty"] = 999
-                positions.append(extra)
+            else:
+                extra = {
+                    "symbol": "PHANTOM",
+                    "qty": 999.0,
+                    "entry": 100.0,
+                    "side": "long",
+                }
+            positions.append(extra)
         return positions
 
     async def reconcile_order(
