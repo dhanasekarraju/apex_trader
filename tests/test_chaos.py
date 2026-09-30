@@ -116,7 +116,9 @@ async def test_risk_timeout_scenario(fast_chaos, monkeypatch):
 
     runner = ScenarioRunner()
     result = await runner.run(SCENARIO_BY_ID["system_risk_timeout"])
-    assert result.execution_status != "filled" or result.icb_decision == "DENY"
+    assert result.passed is True
+    assert result.safe is True
+    assert result.execution_status.upper() in ("NO_TRADE", "REJECTED")
 
 
 @pytest.mark.asyncio
@@ -233,4 +235,71 @@ async def test_broker_illiquidity_no_fill(fast_chaos, monkeypatch):
 
     runner = ScenarioRunner()
     result = await runner.run(SCENARIO_BY_ID["market_illiquidity"])
-    assert result.execution_status.upper() in ("REJECTED", "NO_TRADE", "")
+    assert result.passed is True
+    assert result.safe is True
+    assert result.execution_status.upper() == "REJECTED"
+
+
+def test_protection_accuracy_only_scores_required_reactions():
+    results = [
+        ScenarioResult(
+            "broker_rejection_spike",
+            passed=True,
+            safe=True,
+            duration_ms=10,
+            icb_decision="ALLOW",
+            execution_status="rejected",
+        ),
+        ScenarioResult(
+            "network_api_timeout_burst",
+            passed=True,
+            safe=True,
+            duration_ms=10,
+            icb_decision="ALLOW",
+            execution_status="rejected",
+        ),
+        ScenarioResult(
+            "system_crce_failure",
+            passed=True,
+            safe=True,
+            duration_ms=10,
+            icb_decision="ALLOW",
+            execution_status="NO_TRADE",
+            safe_mode_triggered=True,
+        ),
+        ScenarioResult(
+            "state_reconciliation_drift",
+            passed=True,
+            safe=True,
+            duration_ms=10,
+            icb_decision="DENY",
+        ),
+    ]
+    metrics = ResilienceReporter(results).compute_metrics()
+    assert metrics["kill_switch_accuracy_pct"] == 100.0
+
+
+@pytest.mark.asyncio
+async def test_reconciliation_drift_invalidates_cached_icb_signals(fast_chaos, monkeypatch):
+    monkeypatch.setenv("ENFORCE_MARKET_HOURS", "false")
+    monkeypatch.setenv("TRADING_MODE", "paper")
+    get_settings.cache_clear()
+
+    from services.control.reconciliation_state import clear_reconciliation_degraded
+    from services.icb.signals import collect_signals
+
+    await clear_reconciliation_degraded()
+    initial = await collect_signals({
+        "trading_mode": "paper",
+        "symbol": "RELIANCE",
+        "risk_status": "SAFE",
+    })
+    assert initial.reconciliation_degraded is False
+
+    runner = ScenarioRunner()
+    result = await runner.run(SCENARIO_BY_ID["state_reconciliation_drift"])
+
+    assert result.passed is True
+    assert result.safe is True
+    assert result.icb_decision == "DENY"
+    assert not result.failures
