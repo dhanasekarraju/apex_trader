@@ -89,6 +89,7 @@ async def test_scenario_runner_logs_crce_events(fast_chaos, chaos_crce, monkeypa
     result = await runner.run(scenario)
 
     assert result.scenario_id == "broker_rejection_spike"
+    assert result.execution_status.lower() == "rejected"
     events = chaos_crce.load_all()
     types = {e["event_type"] for e in events}
     assert EventType.CHAOS_SCENARIO_STARTED.value in types
@@ -318,3 +319,16 @@ def test_live_capital_rejects_any_failed_scenario():
     ]
     reporter = ResilienceReporter(results)
     assert reporter.safe_for_live_capital() is False
+
+
+def test_synthetic_ohlcv_is_timezone_aware_and_fresh():
+    from services.data_quality.engine import DataQualityEngine
+    from services.market_data.service import MarketDataService
+
+    data = MarketDataService()
+    df = data.synthetic_ohlcv("CHAOSFRESH", bars=100)
+
+    assert getattr(df.index, "tz", None) is not None
+    report = DataQualityEngine().assess(df, "CHAOSFRESH")
+    assert report.trade_allowed is True
+    assert report.stale_seconds < 120
