@@ -1,286 +1,136 @@
-function resolveApexBase() {
-  if (window.APEX_BASE) return String(window.APEX_BASE).replace(/\/$/, '');
-  const p = window.location.pathname || '';
-  if (p === '/apex' || p.startsWith('/apex/')) return '/apex';
-  return '';
+/* Passive desk: one bounded snapshot request, no broker calls during refresh. */
+const API = window.APEX_BASE || (location.pathname === '/apex' || location.pathname.startsWith('/apex/') ? '/apex' : '');
+const POLL_MS = Math.max(60000, Number(window.APEX_UI_POLL_MS) || 60000);
+const $ = id => document.getElementById(id);
+const money = n => Number.isFinite(n) ? '₹' + n.toLocaleString('en-IN', {minimumFractionDigits: 2, maximumFractionDigits: 2}) : '—';
+const pct = n => Number.isFinite(n) ? n.toFixed(1) + '%' : '—';
+const time = value => value ? new Date(value).toLocaleTimeString('en-IN', {timeZone:'Asia/Kolkata', hour:'2-digit', minute:'2-digit', second:'2-digit', hour12:false}) : '—';
+const set = (id, value) => { $(id).textContent = value; };
+const node = (tag, text, cls) => { const el = document.createElement(tag); if (text != null) el.textContent = text; if (cls) el.className = cls; return el; };
+let snapshot = null, receivedAt = 0, inFlight = null, timer = null, failures = 0, lastAttempt = 0, actionBusy = false;
+
+async function api(path, method = 'GET') {
+  const response = await fetch(API + path, {method, credentials:'same-origin', cache:'no-store',
+    ...(method === 'GET' ? {signal:AbortSignal.timeout(8000)} : {})});
+  const body = await response.json();
+  if (!response.ok || body.success === false) throw new Error(body.error || body.detail || 'Request failed (' + response.status + ')');
+  return body.success === true ? body.data : body;
 }
-
-const API = resolveApexBase();
-
-const POLL_MS = Math.max(Number(window.APEX_UI_POLL_MS) || 60000, 15000);
-
-function authHeaders(extra = {}) {
-  const headers = { 'Content-Type': 'application/json', ...extra };
-
-  return headers;
+function badge(id, text, tone = '') { set(id, text); $(id).className = 'badge ' + tone; }
+function observationFresh(observation, maxAge = 120) {
+  return observation?.age_seconds != null && observation.age_seconds + (Date.now() - receivedAt) / 1000 < maxAge;
 }
-
-async function api(path, opts = {}) {
-  const readOptions = !opts.method || opts.method === 'GET'
-    ? { signal: AbortSignal.timeout(20000) } : {};
-  const r = await fetch(API + path, {
-    ...readOptions,
-    headers: authHeaders(opts.headers || {}),
-    ...opts,
-  });
-  const text = await r.text();
-  let payload;
+function renderFreshness() {
+  if (!snapshot) return;
+  const d = snapshot, age = (Date.now() - receivedAt) / 1000;
+  const feedFresh = observationFresh(d.pnl) && !d.pnl.data.stale;
+  const issues = [];
+  if (failures || age > 120) issues.push('Snapshot unavailable or old; displayed values may be stale.');
+  if (!feedFresh) issues.push('P&L observation is stale or unavailable.');
+  if (d.portfolio.trading_halted) issues.push('Trading is halted. Existing exposure still needs supervision.');
+  if (d.reconciliation.status !== 'OK') issues.push('Reconciliation ' + d.reconciliation.status + ': ' + (d.reconciliation.reason || 'not confirmed'));
+  if (!Object.values(d.loops).every(Boolean)) issues.push('One or more trading loops are not running.');
+  const notice = $('stateNotice');
+  notice.className = 'notice ' + (d.portfolio.trading_halted || d.reconciliation.status === 'DEGRADED' ? 'bad' : issues.length ? '' : 'good');
+  notice.textContent = issues.length ? issues.join(' ') : 'Latest observations available. ' + (d.mode === 'paper' ? 'Paper mode uses simulated execution.' : d.mode === 'shadow' ? 'Shadow mode does not place live orders.' : 'Live mode selected; order eligibility is checked by the backend.');
+  const runFresh = observationFresh(d.running, Math.max(120, d.scan_interval_seconds * 2 + 30));
+  set('engineState', runFresh ? (d.running.data.running ? 'Scanning enabled' : 'Scanning stopped') : 'Unknown / stale');
+  $('engineDot').className = 'status-dot ' + (runFresh && d.running.data.running && d.loops.autonomous ? 'good' : '');
+  $('startBtn').disabled = actionBusy || !runFresh || !!d.running.data.running || !!d.portfolio.trading_halted || d.reconciliation.status !== 'OK' || !feedFresh || failures > 0 || age > 120;
+  set('dataSource', (d.mode === 'paper' ? 'Paper observations' : 'Engine observations') + ' · P&L ' + time(d.pnl.observed_at) + ' IST' + (feedFresh ? '' : ' · STALE'));
+  if (!feedFresh) { set('dayPnl', '—'); set('pnlDetail', 'Stale P&L withheld · last observation ' + time(d.pnl.observed_at)); }
+}
+function meter(label, value, limit, unit = '%') {
+  const wrapper = node('div', null, 'meter');
+  const line = node('div', null, 'meter-line');
+  line.append(node('span', label), node('b', (Number.isFinite(value) ? value.toFixed(unit ? 1 : 0) + unit : '—') + ' / ' + limit + unit));
+  const track = node('div', null, 'meter-track');
+  const ratio = Number.isFinite(value) && limit > 0 ? value / limit * 100 : 0;
+  const fill = node('div', null, 'meter-fill ' + (ratio >= 90 ? 'bad' : ratio >= 70 ? 'warn' : ''));
+  fill.style.width = Math.max(0, Math.min(100, ratio)) + '%'; track.append(fill); wrapper.append(line, track); return wrapper;
+}
+function render(d) {
+  const p = d.portfolio, policy = d.sizing_policy, positions = d.positions;
+  const feedFresh = observationFresh(d.pnl) && !d.pnl.data.stale;
+  const pnl = d.pnl.data;
+  badge('modeBadge', String(d.mode).toUpperCase() + ' MODE', d.mode === 'live' ? 'warn' : '');
+  set('capital', money(p.equity)); set('cash', money(p.cash));
+  set('dayPnl', feedFresh ? money(pnl.daily_pnl) : '—');
+  $('dayPnl').className = 'metric-value ' + (feedFresh && pnl.daily_pnl > 0 ? 'positive' : feedFresh && pnl.daily_pnl < 0 ? 'negative' : '');
+  set('pnlDetail', feedFresh ? 'Realised ' + money(pnl.realized_pnl) + ' · unrealised ' + money(pnl.unrealized_pnl) : 'Awaiting fresh P&L');
+  const exposure = positions.reduce((sum, pos) => sum + pos.qty * pos.entry, 0);
+  const deployed = p.equity > 0 ? exposure / p.equity * 100 : null;
+  set('exposure', money(exposure)); set('exposureDetail', positions.length + ' positions · ' + pct(deployed) + ' of ledger capital');
+  set('allocationPct', pct(deployed) + ' deployed'); set('allocatedValue', money(exposure)); set('unallocatedValue', money(Math.max(0, p.equity - exposure)));
+  $('allocationFill').style.width = Math.min(100, Math.max(0, deployed || 0)) + '%';
+  set('allocationNote', 'Position-cost ceiling ' + (100 - policy.cash_reserve_pct) + '% · actual sizing can be lower. Unallocated capital is not available margin.');
+  set('positionCount', positions.length);
+  const rows = [];
+  for (const pos of positions) {
+    const row = node('tr');
+    const name = node('td', pos.symbol); name.append(node('small', pos.strategy)); row.append(name);
+    row.append(node('td', pos.qty, 'numeric'), node('td', money(pos.entry), 'numeric'));
+    const levels = node('td', money(pos.stop_loss), 'numeric'); levels.append(node('small', money(pos.take_profit))); row.append(levels);
+    const quote = (pnl.positions || []).find(q => q.symbol === pos.symbol && q.qty === pos.qty);
+    const gain = feedFresh && quote ? quote.unrealized_pnl : null;
+    row.append(node('td', money(gain), 'numeric ' + (gain > 0 ? 'positive' : gain < 0 ? 'negative' : '')));
+    const stop = node('td'); const label = node('span', pos.stop_order_id ? 'ID recorded' : 'Unconfirmed', 'badge ' + (pos.stop_order_id ? '' : 'warn'));
+    label.title = pos.stop_order_id || 'No protective stop ID recorded'; stop.append(label); row.append(stop); rows.push(row);
+  }
+  if (!rows.length) { const tr = node('tr'), td = node('td', 'No internally tracked positions. Broker reconciliation determines whether the account is flat.', 'empty'); td.colSpan = 6; tr.append(td); rows.push(tr); }
+  $('positionRows').replaceChildren(...rows);
+  const lossPct = p.equity > 0 && feedFresh ? Math.max(0, -pnl.daily_pnl) / p.equity * 100 : null;
+  $('riskMeters').replaceChildren(meter('Daily loss', lossPct, policy.max_daily_loss_pct), meter('Ledger drawdown', Math.max(0, p.drawdown_pct), policy.max_monthly_drawdown_pct), meter('Planned portfolio risk', p.portfolio_heat_pct, policy.max_portfolio_heat_pct), meter('Open positions', positions.length, policy.max_open_positions, ''));
+  badge('riskBadge', p.trading_halted ? 'HALTED' : 'LIMITS', p.trading_halted ? 'bad' : '');
+  set('tradeRisk', policy.max_risk_per_trade_pct + '%'); set('netPayoff', policy.min_net_reward_risk + ' : 1'); set('positionCap', policy.max_position_value_pct + '%'); set('cashReserve', policy.cash_reserve_pct + '%');
+  set('reconcileState', d.reconciliation.status); $('reconcileState').className = d.reconciliation.status === 'OK' ? '' : 'negative';
+  set('kiteState', d.kite.session_saved ? 'Saved · not verified here' : d.kite.configured ? 'Login needed' : 'Not configured'); set('sessionTime', d.session);
+  const auto = d.autonomous.data;
+  set('lastCycle', time(d.autonomous.observed_at)); set('scanStats', auto.stats ? (auto.stats.scanned ?? '—') + ' / ' + (auto.stats.buy ?? '—') : '—');
+  const decisions = d.recent_decisions.map(item => { const el = node('div', null, 'decision'), body = node('div', null, 'decision-body'); body.append(node('div', item.symbol + ' · ' + (item.strategy || 'Strategy unavailable'), 'decision-title'), node('p', item.risk_reason || 'No decision detail recorded.')); el.append(node('span', '↗', 'decision-mark'), body, node('span', item.action || 'OBSERVED', 'badge ' + (item.action === 'REJECTED' ? 'warn' : ''))); return el; });
+  $('decisionList').replaceChildren(...(decisions.length ? decisions : [node('p', 'No signal decisions in this process yet. The desk does not trigger scans.', 'empty')]));
+  renderFreshness();
+}
+function schedule() { clearTimeout(timer); if (!document.hidden) timer = setTimeout(refresh, Math.max(POLL_MS, Math.min(300000, POLL_MS * 2 ** Math.min(failures, 3)))); }
+function refresh() {
+  if (inFlight) return inFlight;
+  if (Date.now() - lastAttempt < 5000) { schedule(); return Promise.resolve(); }
+  clearTimeout(timer); lastAttempt = Date.now(); $('refreshBtn').disabled = true; set('refreshStatus', 'Reading snapshot…');
+  inFlight = (async () => {
+    try { const d = await api('/api/desk/snapshot'); snapshot = d; receivedAt = Date.now(); failures = 0; render(d); set('refreshStatus', 'Snapshot ' + time(d.generated_at) + ' IST · every 60s'); }
+    catch (error) { failures++; set('refreshStatus', 'Update unavailable · retrying less often'); if (snapshot) renderFreshness(); else { set('stateNotice', 'Snapshot unavailable. ' + error.message); $('startBtn').disabled = true; } }
+    finally { inFlight = null; $('refreshBtn').disabled = false; schedule(); }
+  })();
+  return inFlight;
+}
+function confirmAction(title, description) {
+  const dialog = $('confirmDialog'); set('confirmTitle', title); set('confirmText', description); dialog.returnValue = '';
+  return new Promise(resolve => { dialog.addEventListener('close', () => resolve(dialog.returnValue === 'confirm'), {once:true}); dialog.showModal(); });
+}
+async function action(path, title, description) {
+  if (actionBusy) return;
+  actionBusy = true;
   try {
-    payload = text ? JSON.parse(text) : {};
-  } catch {
-    if (!r.ok) throw new Error(text || r.statusText);
-    return text;
-  }
-  if (payload && typeof payload.success === 'boolean') {
-    if (!payload.success) throw new Error(payload.error || 'Request failed');
-    return payload.data ?? {};
-  }
-  if (!r.ok) throw new Error(text || r.statusText);
-  return payload;
+    if (!await confirmAction(title, description)) return;
+    for (const id of ['startBtn','stopBtn','haltBtn']) $(id).disabled = true;
+    const notice = $('actionNotice'); notice.hidden = false; notice.className = 'notice action-notice'; notice.textContent = 'Waiting for backend confirmation. Do not repeat this action.';
+    const result = await api(path, 'POST');
+    notice.textContent = result.ok === false ? (result.message || (result.blockers || []).join('; ') || 'Action incomplete. Review broker orders and positions.') : path.includes('kill-switch') ? 'Halt processed. ' + (result.ok === true ? 'Tracked closure confirmed by backend. Review broker account for any untracked exposure.' : 'Review closure results and broker exposure; a halt does not prove the account is flat.') : result.message || 'Request completed. Snapshot will reflect the observed engine state.';
+    notice.className = 'notice action-notice ' + (result.ok === false ? 'bad' : '');
+    if (inFlight) await inFlight;
+    lastAttempt = 0; await refresh();
+  } catch (error) { $('actionNotice').hidden = false; $('actionNotice').className = 'notice action-notice bad'; set('actionNotice', 'Action outcome is unconfirmed. Check engine / broker state before retrying. ' + error.message); }
+  finally { actionBusy = false; $('stopBtn').disabled = false; $('haltBtn').disabled = false; renderFreshness(); }
 }
-
-function kiteConnectHref(status) {
-  if (status?.login_url) return status.login_url;
-  const login = `${API}/api/kite/login`;
-
-  return login;
-}
-
-async function loadKiteStatus() {
-  const panel = document.getElementById('kiteStatusPanel');
-  const pill = document.getElementById('kitePill');
-  const connectBtn = document.getElementById('kiteConnectBtn');
-  const disconnectBtn = document.getElementById('kiteDisconnectBtn');
-  const hint = document.getElementById('kiteRedirectHint');
-  if (!panel || !connectBtn || !disconnectBtn) return;
-
-  try {
-    const s = await api('/api/kite/status');
-    pill.textContent = s.connected ? 'CONNECTED' : 'OFFLINE';
-    pill.className = 'pill ' + (s.connected ? 'live' : (s.configured ? 'warn' : 'danger'));
-    const who = s.user_name ? ` · ${s.user_name}` : '';
-    const when = s.login_time
-      ? ` · ${new Date(s.login_time).toLocaleString('en-IN')}`
-      : '';
-    panel.textContent = `${s.message}${who}${when}`;
-    if (hint) {
-      if (s.redirect_url && s.configured && !s.connected) {
-        hint.style.display = 'block';
-        hint.textContent = `Redirect URL: ${s.redirect_url}`;
-      } else {
-        hint.style.display = 'none';
-      }
-    }
-    connectBtn.style.display = s.connected ? 'none' : 'inline-block';
-    connectBtn.href = kiteConnectHref(s);
-    disconnectBtn.style.display = s.connected ? 'inline-block' : 'none';
-  } catch {
-    panel.textContent = 'Could not load Kite status — try Connect or check APP_BASE_PATH=/apex';
-    pill.textContent = 'Kite —';
-    pill.className = 'pill danger';
-    connectBtn.style.display = 'inline-block';
-    connectBtn.href = kiteConnectHref(null);
-    disconnectBtn.style.display = 'none';
-  }
-}
-
-function handleKiteQueryParams() {
-  const params = new URLSearchParams(window.location.search);
-  const kite = params.get('kite');
-  if (!kite) return;
-  if (kite === 'connected') {
-    alert('Kite connected. You can start autonomous.');
-  } else if (kite === 'error') {
-    alert('Kite login failed: ' + decodeURIComponent(params.get('reason') || 'unknown'));
-  }
-  window.history.replaceState({}, '', API + '/');
-}
-
-async function disconnectKite() {
-  if (!confirm('Disconnect Kite on this server?')) return;
-  await api('/api/kite/disconnect', { method: 'POST' });
-  await refreshAll();
-}
-
-function renderAutonomous(status, liveBlockers) {
-  if (!status) return;
-  const running = !!status.running;
-  const pill = document.getElementById('autonomousPill');
-  if (pill) {
-    pill.textContent = running ? 'AUTO — RUNNING' : 'AUTO — OFF';
-    pill.className = 'pill ' + (running ? 'live' : '');
-  }
-
-  const sessionEl = document.getElementById('autoSession');
-  if (sessionEl) sessionEl.textContent = status.session || '—';
-
-  const wl = document.getElementById('autoWatchlist');
-  if (wl) {
-    wl.textContent = status.watchlist_mode === 'dynamic'
-      ? `${status.universe_scan_size || 15} scan · pool ${status.universe_pool_size || 50}`
-      : `${status.watchlist_count ?? 0} symbols`;
-  }
-
-  const last = document.getElementById('autoLastCycle');
-  if (last) {
-    last.textContent = status.last_cycle_at
-      ? (status.last_cycle_at.slice(11, 19) || status.last_cycle || '—')
-      : (status.last_cycle || '—');
-  }
-
-  const stats = status.stats || {};
-  const cycle = document.getElementById('autoCycleStats');
-  if (cycle) {
-    cycle.textContent = stats.scanned != null
-      ? `${stats.scanned} / ${stats.buy ?? 0} buy`
-      : '—';
-  }
-
-  const blockers = [...new Set([...(status.blockers || []), ...(liveBlockers || [])])];
-  const blockersEl = document.getElementById('autoBlockers');
-  const actionsEl = document.getElementById('autoBlockerActions');
-  if (blockersEl) {
-    if (blockers.length && !running) {
-      blockersEl.style.display = 'block';
-      blockersEl.textContent = 'Blockers: ' + blockers.join('; ');
-    } else {
-      blockersEl.style.display = 'none';
-      blockersEl.textContent = '';
-    }
-  }
-  if (actionsEl) {
-    const needsCrce = blockers.some(b => /CRCE|repair-chain/i.test(b));
-    const needsChaos = blockers.some(b => /chaos|resilience|INSTITUTIONAL|scenario/i.test(b));
-    actionsEl.style.display = blockers.length && !running ? 'flex' : 'none';
-    const crceBtn = document.getElementById('repairCrceBtn');
-    const chaosBtn = document.getElementById('runChaosBtn');
-    if (crceBtn) crceBtn.style.display = needsCrce ? 'inline-block' : 'none';
-    if (chaosBtn) chaosBtn.style.display = needsChaos ? 'inline-block' : 'none';
-  }
-
-  const startBtn = document.getElementById('autoStartBtn');
-  const stopBtn = document.getElementById('autoStopBtn');
-  if (startBtn) {
-    startBtn.style.display = running ? 'none' : 'inline-block';
-    startBtn.title = blockers.length ? blockers.join('; ') : 'Start autonomous scan';
-  }
-  if (stopBtn) stopBtn.style.display = running ? 'inline-block' : 'none';
-}
-
-async function loadAutonomousPanel() {
-  try {
-    const [status, checklist] = await Promise.all([
-      api('/api/autonomous/status'),
-      api('/api/live/checklist').catch(() => ({})),
-    ]);
-    const liveBlockers = checklist.crce_and_chaos || checklist.hard_blockers || [];
-    renderAutonomous(status, liveBlockers);
-  } catch (e) {
-    const pill = document.getElementById('autonomousPill');
-    pill.textContent = 'AUTO — UNKNOWN';
-    pill.className = 'pill danger';
-    document.getElementById('autoBlockers').style.display = 'block';
-    document.getElementById('autoBlockers').textContent = 'Status unavailable. Previous values may be stale.';
-  }
-}
-
-async function repairCrce() {
-  const btn = document.getElementById('repairCrceBtn');
-  const prev = btn?.textContent;
-  try {
-    if (btn) { btn.textContent = 'Repairing…'; btn.disabled = true; }
-    const r = await api('/api/live/repair-crce', { method: 'POST' });
-    alert(r.repair?.message || (r.crce_ok ? 'CRCE OK' : 'Repair done'));
-    await refreshAll();
-  } catch (e) {
-    alert('CRCE repair failed: ' + (e.message || e));
-  } finally {
-    if (btn) { btn.textContent = prev || 'Repair CRCE'; btn.disabled = false; }
-  }
-}
-
-async function runFullChaos() {
-  if (!confirm('Run full chaos suite (~5–15 min)? Stop autonomous first.')) return;
-  const btn = document.getElementById('runChaosBtn');
-  const prev = btn?.textContent;
-  try {
-    if (btn) { btn.textContent = 'Starting…'; btn.disabled = true; }
-    await api('/api/autonomous/stop', { method: 'POST' }).catch(() => {});
-    await api('/api/chaos/run?quick=false&background=true', { method: 'POST' });
-    alert('Chaos started in background. Refresh in ~10 min, then start autonomous.');
-  } catch (e) {
-    alert('Chaos failed: ' + (e.message || e));
-  } finally {
-    if (btn) { btn.textContent = prev || 'Run chaos suite'; btn.disabled = false; }
-  }
-}
-
-async function startAutonomous() {
-  let blockers = [];
-  try {
-    const status = await api('/api/autonomous/status');
-    blockers = status.blockers || [];
-  } catch (e) {
-    alert('Could not load status: ' + (e.message || e));
-    return;
-  }
-  if (blockers.length) {
-    alert('Start blocked:\n\n' + blockers.map((b, i) => `${i + 1}. ${b}`).join('\n'));
-    return;
-  }
-  if (!confirm('Start autonomous?\n\nScans watchlist and trades through risk + execution.')) return;
-  try {
-    const r = await api('/api/autonomous/start', { method: 'POST' });
-    alert(r.message || 'Autonomous started.');
-    await loadAutonomousPanel();
-  } catch (e) {
-    alert(e.message || 'Start failed');
-    await loadAutonomousPanel();
-  }
-}
-
-async function stopAutonomous() {
-  await api('/api/autonomous/stop', { method: 'POST' });
-  await loadAutonomousPanel();
-}
-
-async function loadRiskPanel() {
-  try {
-    const d = await api('/api/dashboard');
-    const p = d.portfolio || {};
-    document.getElementById('riskSummary').textContent = `Mode: ${d.mode} · Capital ₹${p.equity} · Available cash ₹${p.cash} · Daily P&L ₹${p.daily_pnl} · Drawdown ${p.drawdown_pct}% · ${p.trading_halted ? 'HALTED' : 'Active'} · Reconciliation: ${d.reconciliation?.status || 'UNKNOWN'} ${d.reconciliation?.reason || ''}`;
-    const positions = d.positions || [];
-    document.getElementById('positionsSummary').textContent = positions.length ? positions.map(p => `${p.symbol}: ${p.qty} shares · entry ₹${p.entry} · stop ₹${p.stop_loss} · target ₹${p.take_profit} · ${p.stop_order_id ? 'stop ID ' + p.stop_order_id : 'protection unconfirmed'}`).join('\n') : 'No internally tracked positions. Check broker reconciliation status before live trading.';
-    const s = d.sizing_policy || {};
-    document.getElementById('sizingSummary').textContent = `Cash-based position cap ${s.max_position_value_pct}% · cash reserve ${s.cash_reserve_pct}% · per-trade risk ${s.max_risk_per_trade_pct}% · minimum net reward/risk ${s.min_net_reward_risk}. Latest decision: ${d.recent_decisions?.[0]?.sizing?.detail || 'none'}`;
-  } catch (e) {
-    document.getElementById('riskSummary').textContent = 'State unavailable — do not assume the account is flat. ' + e.message;
-  }
-}
-async function emergencyFlatten() {
-  if (!confirm('Halt entries and attempt to close tracked positions? Unconfirmed exits will remain flagged.')) return;
-  const result = await api('/api/admin/kill-switch/on', {method: 'POST'});
-  alert(result.ok ? 'Confirmed tracked exits completed; trading remains halted.' : 'Exit incomplete. Check broker positions and unresolved orders.');
-  await refreshAll();
-}
-let refreshInFlight = null;
-let refreshTimer = null;
-function refreshAll() {
-  if (refreshInFlight) return refreshInFlight;
-  clearTimeout(refreshTimer);
-  document.getElementById('refreshStatus').textContent = 'Checking…';
-  refreshInFlight = Promise.all([loadKiteStatus(), loadAutonomousPanel(), loadRiskPanel()])
-    .finally(() => {
-      document.getElementById('refreshStatus').textContent = 'Last check ' + new Date().toLocaleTimeString('en-IN') + ' · see panel status';
-      refreshInFlight = null;
-      if (!document.hidden) refreshTimer = setTimeout(refreshAll, POLL_MS);
-    });
-  return refreshInFlight;
-}
-document.addEventListener('visibilitychange', () => {
-  clearTimeout(refreshTimer);
-  if (!document.hidden) refreshAll();
-});
-
-handleKiteQueryParams();
-refreshAll();
+$('refreshBtn').addEventListener('click', refresh);
+$('startBtn').addEventListener('click', () => action('/api/autonomous/start', 'Start autonomous scanning?', 'The backend will check trading eligibility. Eligible live-mode signals may place real orders.'));
+$('stopBtn').addEventListener('click', () => action('/api/autonomous/stop', 'Stop autonomous scanning?', 'Existing positions remain open. Protective stops and lifecycle processing remain the backend’s responsibility.'));
+$('haltBtn').addEventListener('click', () => action('/api/admin/kill-switch/on', 'Halt and close tracked positions?', 'This is a real trading action in live mode. Unconfirmed or partial exits require broker review.'));
+$('kiteConnect').href = API + '/api/kite/login';
+set('deskDate', new Date().toLocaleDateString('en-IN', {timeZone:'Asia/Kolkata', day:'2-digit', month:'short', year:'numeric'}));
+const params = new URLSearchParams(location.search);
+if (params.has('kite')) { $('actionNotice').hidden = false; set('actionNotice', params.get('kite') === 'connected' ? 'Kite login completed. Engine checks still determine trading eligibility.' : 'Kite login failed. ' + (params.get('reason') || 'Please retry login.')); history.replaceState({}, '', API + '/'); }
+document.addEventListener('visibilitychange', () => { clearTimeout(timer); if (!document.hidden) { renderFreshness(); refresh(); } });
+// Local freshness only; this timer never makes a request.
+setInterval(() => { if (!document.hidden) renderFreshness(); }, 10000);
+if (!document.hidden) refresh();

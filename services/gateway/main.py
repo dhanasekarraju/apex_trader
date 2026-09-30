@@ -294,6 +294,17 @@ async def health():
     }
 
 
+@app.get("/api/desk/snapshot", dependencies=[Depends(require_api_auth)])
+async def desk_snapshot(response: Response):
+    from services.gateway.desk_snapshot import build_snapshot
+    response.headers["Cache-Control"] = "private, no-store"
+    return build_snapshot(orch, {
+        "control": _task_alive(_refresh_task),
+        "lifecycle": _task_alive(_lifecycle_task),
+        "autonomous": _task_alive(_autonomous_task),
+    })
+
+
 @app.get("/api/dashboard", dependencies=[Depends(require_api_auth)])
 async def dashboard():
     from services.control.reconciliation_state import get_reconciliation_status

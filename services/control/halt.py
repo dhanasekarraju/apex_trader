@@ -39,6 +39,8 @@ async def is_emergency_halt() -> bool:
 
 
 async def cache_pnl_snapshot(snapshot: dict) -> None:
+    from services.gateway.desk_snapshot import observe
+    observe("pnl", snapshot)
     try:
         await cache_set(PNL_CACHE_KEY, json.dumps(snapshot, default=str), ttl=10)
     except Exception:

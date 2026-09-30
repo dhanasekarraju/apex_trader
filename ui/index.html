@@ -1,74 +1,35 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Apex Trader — Control</title>
-<link rel="stylesheet" href="assets/style.css?v=9">
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light"><title>Apex · Trading desk</title>
+<link rel="stylesheet" href="assets/style.css?v=10">
 </head>
 <body>
-<div class="app app-minimal">
-  <header class="header-minimal">
-    <div class="brand">
-      <div class="logo">A</div>
-      <div>
-        <h1>Apex Trader</h1>
-        <p>Daily control — connect Kite, start autonomous</p>
-      </div>
-    </div>
-    <div><button class="btn ghost" type="button" onclick="refreshAll()">Refresh</button><p id="refreshStatus" class="metric-sub" role="status">Waiting for update…</p></div>
-  </header>
-
-  <div class="card kite-card" id="kiteCard">
-    <div class="kite-row">
-      <div>
-        <h2>1 · Zerodha Kite</h2>
-        <div id="kiteStatusPanel" class="metric-sub">Checking session…</div>
-        <div id="kiteRedirectHint" class="metric-sub hint" style="display:none"></div>
-      </div>
-      <div class="kite-actions">
-        <span class="pill" id="kitePill">Kite —</span>
-        <a class="btn" id="kiteConnectBtn" href="#" style="display:none">Connect Zerodha</a>
-        <button class="btn ghost" type="button" id="kiteDisconnectBtn" onclick="disconnectKite()" style="display:none">Disconnect</button>
-      </div>
-    </div>
-  </div>
-
-  <div class="card autonomous-card">
-    <div class="autonomous-header">
-      <h2>2 · Autonomous engine</h2>
-      <span class="pill" id="autonomousPill">AUTO — OFF</span>
-    </div>
-    <p class="metric-sub intro">Scans watchlist during session <strong id="autoSession">—</strong> IST. Reconnect Kite each morning (~6 AM).</p>
-    <div class="autonomous-stats minimal-stats">
-      <div><span class="metric-sub">Watchlist</span><span id="autoWatchlist">—</span></div>
-      <div><span class="metric-sub">Last cycle</span><span id="autoLastCycle">—</span></div>
-      <div><span class="metric-sub">Scanned / Buy</span><span id="autoCycleStats">—</span></div>
-    </div>
-    <div id="autoBlockers" class="metric-sub blockers" style="display:none"></div>
-    <div id="autoBlockerActions" class="input-row blocker-actions" style="display:none">
-      <button class="btn ghost" type="button" id="repairCrceBtn" onclick="repairCrce()">Repair CRCE</button>
-      <button class="btn ghost" type="button" id="runChaosBtn" onclick="runFullChaos()">Run chaos suite</button>
-    </div>
-    <div class="input-row actions">
-      <button class="btn" type="button" id="autoStartBtn" onclick="startAutonomous()">Start autonomous</button>
-      <button class="btn ghost" type="button" id="autoStopBtn" onclick="stopAutonomous()" style="display:none">Stop</button>
-    </div>
-  </div>
-
-  <section class="card">
-    <h2>Capital and safety</h2>
-    <p id="riskSummary">Loading confirmed state…</p>
-    <details><summary>Sizing limits</summary><p id="sizingSummary">Cash-based sizing; position value and stop-loss risk are different.</p></details>
-    <pre id="positionsSummary" style="white-space:pre-wrap">Loading positions…</pre>
-    <button class="btn" type="button" onclick="emergencyFlatten()">Emergency halt and close positions</button>
-    <p class="metric-sub">Stopping autonomous scanning does not close positions. Any unresolved exit remains visible and requires broker review.</p>
-  </section>
-  <footer class="footer-minimal">
-    Backend keeps trading when this tab is closed · MIS square-off 15:15 IST
-  </footer>
-</div>
-<script>window.APEX_BASE = ''; window.APEX_UI_POLL_MS = 60000;</script>
-<script src="assets/app.js?v=9"></script>
-</body>
-</html>
+<aside class="rail" aria-label="Desk navigation"><a class="monogram" href="#overview" aria-label="Apex overview">A<span>·</span></a><span class="rail-label">TRADING DESK</span><a class="rail-link active" href="#overview" title="Overview" aria-label="Overview">◫</a><a class="rail-link" href="#positions" title="Positions" aria-label="Positions">▤</a><a class="rail-link" href="#controls" title="Controls" aria-label="Controls">≡</a><span class="rail-bottom">APX</span></aside>
+<div class="workspace">
+<header class="topbar"><div class="brand">APEX <span>CAPITAL SYSTEMS</span></div><div class="top-status"><span class="badge" id="modeBadge">MODE UNKNOWN</span><span class="date" id="deskDate"></span></div></header>
+<main id="overview">
+<section class="page-heading"><div><div class="eyebrow">OPERATIONS / OVERVIEW</div><h1>Your trading desk.</h1><p class="muted">Capital discipline. Clear exposure. Controlled execution.</p></div><div class="refresh-block"><button class="button secondary" id="refreshBtn">↻ &nbsp; Refresh snapshot</button><p id="refreshStatus" role="status">Waiting for first snapshot</p></div></section>
+<div class="notice" id="stateNotice" role="status">Awaiting engine observations. No account state has been confirmed.</div>
+<div class="notice action-notice" id="actionNotice" role="status" hidden></div>
+<section class="metrics" aria-label="Portfolio overview">
+<article class="metric"><div class="metric-label">LEDGER CAPITAL <span>01</span></div><div class="metric-value" id="capital">—</div><p>Allocated capital · not broker NAV</p></article>
+<article class="metric"><div class="metric-label">AVAILABLE CASH <span>02</span></div><div class="metric-value" id="cash">—</div><p>Latest recorded cash balance</p></article>
+<article class="metric"><div class="metric-label">DAY P&L <span>03</span></div><div class="metric-value" id="dayPnl">—</div><p id="pnlDetail">Awaiting realised + unrealised P&L</p></article>
+<article class="metric"><div class="metric-label">TRACKED EXPOSURE <span>04</span></div><div class="metric-value" id="exposure">—</div><p id="exposureDetail">Position cost · awaiting snapshot</p></article>
+</section>
+<div class="desk-grid"><div class="primary-column">
+<section class="panel allocation"><div class="section-heading"><div><div class="eyebrow">CAPITAL ALLOCATION</div><h2>Room to stay selective</h2></div><span class="small-label" id="allocationPct">— deployed</span></div><div class="allocation-bar" aria-hidden="true"><span id="allocationFill"></span></div><div class="legend"><span><i class="dot blue"></i>Tracked position cost <b id="allocatedValue">—</b></span><span><i class="dot pale"></i>Unallocated ledger capital <b id="unallocatedValue">—</b></span></div><p class="caption" id="allocationNote">An allocation view, not a margin or available-funds calculation.</p></section>
+<section class="panel positions-panel" id="positions"><div class="section-heading"><div><div class="eyebrow">EXPOSURE REGISTER</div><h2>Open positions <span class="count" id="positionCount">—</span></h2></div><span class="small-label">Internally tracked</span></div><div class="table-scroll"><table><thead><tr><th>Instrument / strategy</th><th class="numeric">Qty</th><th class="numeric">Entry</th><th class="numeric">Stop / target</th><th class="numeric">Unrealised</th><th>Stop order</th></tr></thead><tbody id="positionRows"><tr><td colspan="6" class="empty">Awaiting portfolio snapshot.</td></tr></tbody></table></div><div class="panel-foot">Stop IDs are records, not a guarantee of working protection. Check reconciliation status.</div></section>
+<section class="panel"><div class="section-heading"><div><div class="eyebrow">DECISION FEED</div><h2>Latest signal decisions</h2></div><span class="small-label">Last 5 · signals, not fills</span></div><div id="decisionList" class="decision-list"><p class="empty">No snapshot yet.</p></div></section>
+</div><aside class="secondary-column">
+<section class="panel risk-panel"><div class="section-heading"><div><div class="eyebrow">RISK OVERSIGHT</div><h2>Guardrails</h2></div><span class="badge" id="riskBadge">UNKNOWN</span></div><div id="riskMeters"></div><div class="policy-grid"><div><span>Per-trade risk</span><strong id="tradeRisk">—</strong></div><div><span>Min. net payoff</span><strong id="netPayoff">—</strong></div><div><span>Position cap</span><strong id="positionCap">—</strong></div><div><span>Cash reserve</span><strong id="cashReserve">—</strong></div></div><p class="caption">Configured limits guide sizing; gaps and slippage can exceed planned loss.</p></section>
+<section class="panel" id="controls"><div class="section-heading"><div><div class="eyebrow">EXECUTION CONTROL</div><h2>Engine & connection</h2></div><span class="status-dot" id="engineDot"></span></div><dl class="status-list"><div><dt>Autonomous</dt><dd id="engineState">Unknown</dd></div><div><dt>Reconciliation</dt><dd id="reconcileState">Unknown</dd></div><div><dt>Kite session</dt><dd id="kiteState">Unknown</dd></div><div><dt>Trading session</dt><dd id="sessionTime">—</dd></div><div><dt>Engine observation</dt><dd id="lastCycle">—</dd></div><div><dt>Scanned / buy signals</dt><dd id="scanStats">—</dd></div></dl><div class="control-buttons"><button class="button primary" id="startBtn" disabled>Start scanning</button><button class="button secondary" id="stopBtn">Stop scanning</button></div><a class="text-link" id="kiteConnect" href="#">Connect / renew Kite session ↗</a><p class="caption">Stopping scans does not close positions. Trading continues when this page is closed.</p><details class="emergency"><summary>Emergency controls</summary><p>Halt new entries and attempt to close tracked positions. Unconfirmed exits require broker review.</p><button class="button danger" id="haltBtn">Halt & close tracked positions</button></details></section>
+<div class="quiet-note"><span class="quiet-icon">◌</span><div><strong>Quiet by design</strong><p>One snapshot per minute while visible. No chart streaming or broker checks on refresh.</p></div></div>
+</aside></div>
+<footer><span>APEX / OPERATIONS DESK</span><span id="dataSource">Snapshot data · not a streaming terminal</span><span>All times IST</span></footer>
+</main></div>
+<dialog id="confirmDialog"><form method="dialog"><div class="eyebrow">CONFIRM ACTION</div><h2 id="confirmTitle"></h2><p id="confirmText"></p><div class="dialog-actions"><button class="button secondary" value="cancel">Cancel</button><button class="button primary" value="confirm">Confirm</button></div></form></dialog>
+<script>window.APEX_BASE = ''; window.APEX_UI_POLL_MS = 60000;</script><script src="assets/app.js?v=10" defer></script>
+</body></html>

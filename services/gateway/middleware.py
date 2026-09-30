@@ -65,8 +65,11 @@ class EnvelopeMiddleware(BaseHTTPMiddleware):
         async for chunk in response.body_iterator:
             body += chunk
 
+        headers = {k: v for k, v in response.headers.items()
+                   if k.lower() not in ("content-length", "content-type")}
+
         if not body:
-            return JSONResponse(ok({}), status_code=response.status_code)
+            return JSONResponse(ok({}), status_code=response.status_code, headers=headers)
 
         try:
             payload: Any = json.loads(body)
@@ -79,10 +82,10 @@ class EnvelopeMiddleware(BaseHTTPMiddleware):
             )
 
         if isinstance(payload, dict) and "success" in payload:
-            return JSONResponse(payload, status_code=response.status_code)
+            return JSONResponse(payload, status_code=response.status_code, headers=headers)
 
         if response.status_code >= 400:
             message = payload.get("detail", str(payload)) if isinstance(payload, dict) else str(payload)
-            return JSONResponse(fail(str(message)), status_code=response.status_code)
+            return JSONResponse(fail(str(message)), status_code=response.status_code, headers=headers)
 
-        return JSONResponse(ok(payload), status_code=response.status_code)
+        return JSONResponse(ok(payload), status_code=response.status_code, headers=headers)

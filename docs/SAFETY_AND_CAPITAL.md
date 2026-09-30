@@ -90,3 +90,23 @@ Run `python -m pytest tests -q`. Fixtures use temporary SQLite storage, a fake R
 temporary evidence/shadow logs; production PostgreSQL and broker credentials are not needed.
 GitHub Actions runs the suite on pushes to master and pull requests. These tests do not replace
 a PostgreSQL/deployment integration test or a supervised broker session.
+
+## Passive trading desk
+
+The control dashboard polls only `GET /api/desk/snapshot`, once per minute by default
+(minimum 60 seconds, or a slower configured interval). It reads portfolio memory and
+observations published by existing background work. Refresh does not query Kite, Redis or
+PostgreSQL, scan markets, run readiness checks, rebuild reports or take the execution lock.
+It still uses a small HTTP request on the API process; this is not a separate trading service.
+Use the documented single API worker so its observations match the trading process.
+
+The browser pauses polling when hidden, deduplicates overlapping requests, throttles manual
+refreshes to at most one every five seconds, bounds reads to eight seconds and backs off on
+failure (up to five minutes). Controls are explicit POST actions and retain backend gates.
+POST requests are never automatically retried. Opening a page does not start trading.
+
+Freshness reflects existing observations, not a new broker verification. Missing/old P&L and
+unknown reconciliation are shown explicitly. A saved Kite session is not labelled connected.
+Capital means ledger capital, exposure means tracked entry cost, and stop IDs do not certify
+working protection. There is no invented performance curve or estimated margin-use widget.
+The top banner and timestamps must be checked before relying on displayed figures.

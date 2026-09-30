@@ -47,3 +47,8 @@ async def get_reconciliation_status() -> dict:
 async def is_reconciliation_degraded() -> bool:
     status = await get_reconciliation_status()
     return status.get("status") == "DEGRADED"
+
+
+def peek_reconciliation_status() -> dict:
+    """Read local observations only; no cache lookup or optimistic default."""
+    return dict(_memory_status or {"status": "UNKNOWN"})
