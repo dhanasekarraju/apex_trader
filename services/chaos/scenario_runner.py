@@ -88,13 +88,14 @@ class ScenarioRunner:
                     for _ in range(threshold):
                         self.orch.execution._circuit.record_failure("Chaos: API timeout burst")
 
+                probe_symbol = ("C" + scenario.id.replace("_", "").upper())[:15]
                 portfolio_before = len(self.orch.portfolio.state.positions)
                 icb_result = await icb.authorize(
                     ICBAction.ANALYZE_SYMBOL,
                     {
                         "portfolio": self.orch.portfolio,
                         "trading_mode": "paper",
-                        "symbol": "RELIANCE",
+                        "symbol": probe_symbol,
                         "risk_status": "SAFE",
                     },
                 )
@@ -142,7 +143,7 @@ class ScenarioRunner:
                     self.orch.regime.analyze = chaos_regime
                     self.orch.strategies.scan = chaos_scan
                     try:
-                        decision = await self.orch.analyze_symbol("RELIANCE")
+                        decision = await self.orch.analyze_symbol(probe_symbol)
                     finally:
                         self.orch.regime.analyze = original_regime
                         self.orch.strategies.scan = original_scan
@@ -150,6 +151,9 @@ class ScenarioRunner:
                     exec_info = decision.get("execution") or {}
                     result.risk_verdict = decision.get("risk_verdict", decision.get("action", ""))
                     result.execution_status = exec_info.get("status", decision.get("action", ""))
+                    result.observations.append(
+                        f"decision={decision.get('action')} reason={decision.get('reason', decision.get('risk_reason', ''))}"
+                    )
                     if exec_info:
                         result.observations.append(f"execution={exec_info}")
 
