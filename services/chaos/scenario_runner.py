@@ -16,6 +16,8 @@ from services.icb.actions import ICBAction
 from services.icb.engine import icb
 from services.icb.system_state import SystemState, clear_system_state, get_kill_switch_latched
 from services.portfolio.manager import PortfolioManager
+from services.regime.detector import Regime, RegimeAnalysis
+from services.strategies.engine import Signal
 from shared.config import get_settings
 from shared.logging import audit
 
@@ -69,7 +71,11 @@ class ScenarioRunner:
         try:
             async with injector.activate() as broker:
                 cfg = get_settings()
-                monkeypatch_env = {"ENFORCE_MARKET_HOURS": "false", "TRADING_MODE": "paper"}
+                monkeypatch_env = {
+                    "ENFORCE_MARKET_HOURS": "false",
+                    "TRADING_MODE": "paper",
+                    "MAX_ENTRY_DEVIATION_PCT": "1000",
+                }
                 import os
                 for k, v in monkeypatch_env.items():
                     os.environ[k] = v
@@ -103,10 +109,49 @@ class ScenarioRunner:
                 decision = {"action": "NO_TRADE", "reason": icb_result.reason, "execution": {}}
                 exec_info: dict = {}
                 if icb_result.allowed:
-                    decision = await self.orch.analyze_symbol("RELIANCE")
+                    original_regime = self.orch.regime.analyze
+                    original_scan = self.orch.strategies.scan
+
+                    def chaos_regime(_df):
+                        return RegimeAnalysis(
+                            regime=Regime.TREND_UP,
+                            confidence=95.0,
+                            volatility_pct=15.0,
+                            trend_strength=2.0,
+                            recommended_strategies=["trend_following"],
+                            trade_allowed=True,
+                            explanation="Deterministic chaos probe regime",
+                        )
+
+                    def chaos_scan(symbol, df, _regime, _allowed=None):
+                        price = float(df["close"].iloc[-1])
+                        return [
+                            Signal(
+                                symbol=symbol,
+                                strategy="trend_following",
+                                side="long",
+                                entry=price,
+                                stop_loss=price * 0.98,
+                                take_profit=price * 1.04,
+                                confidence=95.0,
+                                qty_suggestion=1.0,
+                                reasons=["Deterministic chaos execution probe"],
+                            ),
+                        ]
+
+                    self.orch.regime.analyze = chaos_regime
+                    self.orch.strategies.scan = chaos_scan
+                    try:
+                        decision = await self.orch.analyze_symbol("RELIANCE")
+                    finally:
+                        self.orch.regime.analyze = original_regime
+                        self.orch.strategies.scan = original_scan
+
                     exec_info = decision.get("execution") or {}
                     result.risk_verdict = decision.get("risk_verdict", decision.get("action", ""))
                     result.execution_status = exec_info.get("status", decision.get("action", ""))
+                    if exec_info:
+                        result.observations.append(f"execution={exec_info}")
 
                 await self._log_chaos(
                     EventType.SYSTEM_RESPONSE,
