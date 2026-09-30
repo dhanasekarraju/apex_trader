@@ -49,7 +49,10 @@ class ScenarioRunner:
 
     async def run(self, scenario: ChaosScenario) -> ScenarioResult:
         start = time.perf_counter()
+        from services.control.reconciliation_state import clear_reconciliation_degraded
         from services.icb.signals import invalidate_signals_cache
+
+        await clear_reconciliation_degraded()
         invalidate_signals_cache()
         await clear_system_state()
         await icb.recover_safe_mode()
@@ -91,6 +94,20 @@ class ScenarioRunner:
                         self.orch.execution._circuit.record_failure("Chaos: API timeout burst")
 
                 probe_symbol = ("C" + scenario.id.replace("_", "").upper())[:15]
+
+                if scenario.fault_config.get("broker_mode") == "position_mismatch":
+                    from services.execution.reconciliation import reconcile_on_startup
+
+                    reconciliation = await reconcile_on_startup(
+                        broker=broker,
+                        portfolio=self.orch.portfolio,
+                        trades=self.orch.execution._trades,
+                        trading_mode="live",
+                    )
+                    result.observations.append(
+                        f"reconciliation_probe={reconciliation}"
+                    )
+
                 portfolio_before = len(self.orch.portfolio.state.positions)
                 icb_result = await icb.authorize(
                     ICBAction.ANALYZE_SYMBOL,
@@ -159,6 +176,31 @@ class ScenarioRunner:
                     if exec_info:
                         result.observations.append(f"execution={exec_info}")
 
+                    if scenario.id == "state_duplicate_events" and exec_info.get("client_order_id"):
+                        duplicate = await self.orch.execution.place_order(
+                            OrderRequest(
+                                symbol=probe_symbol,
+                                side="long",
+                                qty=max(1, int(decision.get("qty") or 1)),
+                                order_type=OrderType.MARKET,
+                                stop_price=float(decision.get("stop_loss") or 1),
+                                take_profit=float(decision.get("take_profit") or 2),
+                                strategy=str(decision.get("strategy") or "trend_following"),
+                                client_order_id=exec_info["client_order_id"],
+                            ),
+                            float(decision.get("entry") or 100),
+                        )
+                        result.observations.append(
+                            f"duplicate_replay={duplicate.status.value}:{duplicate.message}"
+                        )
+                        if (
+                            duplicate.status.value != "rejected"
+                            or "duplicate" not in duplicate.message.lower()
+                        ):
+                            result.failures.append(
+                                "Duplicate replay was not blocked idempotently"
+                            )
+
                 await self._log_chaos(
                     EventType.SYSTEM_RESPONSE,
                     scenario.id,
@@ -183,13 +225,32 @@ class ScenarioRunner:
                 positions = await broker.fetch_open_positions()
                 internal = len(self.orch.portfolio.state.positions)
                 broker_count = len(positions)
-                result.portfolio_consistent = internal <= broker_count or broker_count == 0
-                if not result.portfolio_consistent:
-                    result.failures.append(
-                        f"Portfolio mismatch: internal={internal} broker={broker_count}",
-                    )
 
-                result.reconciliation_ok = result.portfolio_consistent
+                if scenario.fault_config.get("broker_mode") == "position_mismatch":
+                    from services.control.reconciliation_state import is_reconciliation_degraded
+
+                    caught = await is_reconciliation_degraded()
+                    result.portfolio_consistent = bool(caught and result.icb_decision == "DENY")
+                    result.reconciliation_ok = result.portfolio_consistent
+                    if not caught:
+                        result.failures.append("Injected portfolio mismatch was not detected")
+                    if result.icb_decision != "DENY":
+                        result.failures.append("ICB did not deny after portfolio mismatch")
+                else:
+                    internal_positions = {
+                        p.symbol.upper(): float(p.qty)
+                        for p in self.orch.portfolio.state.positions
+                    }
+                    broker_positions = {
+                        str(p.get("symbol", "")).upper(): float(p.get("qty", 0))
+                        for p in positions
+                    }
+                    result.portfolio_consistent = internal_positions == broker_positions
+                    if not result.portfolio_consistent:
+                        result.failures.append(
+                            f"Portfolio mismatch: internal={internal_positions} broker={broker_positions}",
+                        )
+                    result.reconciliation_ok = result.portfolio_consistent
                 await self._log_chaos(
                     EventType.RECONCILIATION_RESULT,
                     scenario.id,
