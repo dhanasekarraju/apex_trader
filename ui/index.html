@@ -4,9 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Apex Trader — Control</title>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="assets/style.css">
+<link rel="stylesheet" href="assets/style.css?v=9">
 </head>
 <body>
 <div class="app app-minimal">
@@ -18,7 +16,7 @@
         <p>Daily control — connect Kite, start autonomous</p>
       </div>
     </div>
-    <button class="btn ghost" type="button" onclick="refreshAll()">Refresh</button>
+    <div><button class="btn ghost" type="button" onclick="refreshAll()">Refresh</button><p id="refreshStatus" class="metric-sub" role="status">Waiting for update…</p></div>
   </header>
 
   <div class="card kite-card" id="kiteCard">
@@ -61,7 +59,7 @@
   <section class="card">
     <h2>Capital and safety</h2>
     <p id="riskSummary">Loading confirmed state…</p>
-    <p id="sizingSummary">Cash-based sizing; position value and stop-loss risk are different.</p>
+    <details><summary>Sizing limits</summary><p id="sizingSummary">Cash-based sizing; position value and stop-loss risk are different.</p></details>
     <pre id="positionsSummary" style="white-space:pre-wrap">Loading positions…</pre>
     <button class="btn" type="button" onclick="emergencyFlatten()">Emergency halt and close positions</button>
     <p class="metric-sub">Stopping autonomous scanning does not close positions. Any unresolved exit remains visible and requires broker review.</p>
@@ -71,6 +69,6 @@
   </footer>
 </div>
 <script>window.APEX_BASE = ''; window.APEX_UI_POLL_MS = 60000;</script>
-<script src="assets/app.js?v=8"></script>
+<script src="assets/app.js?v=9"></script>
 </body>
 </html>

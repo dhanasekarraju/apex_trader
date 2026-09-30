@@ -16,7 +16,10 @@ function authHeaders(extra = {}) {
 }
 
 async function api(path, opts = {}) {
+  const readOptions = !opts.method || opts.method === 'GET'
+    ? { signal: AbortSignal.timeout(20000) } : {};
   const r = await fetch(API + path, {
+    ...readOptions,
     headers: authHeaders(opts.headers || {}),
     ...opts,
   });
@@ -173,7 +176,11 @@ async function loadAutonomousPanel() {
     const liveBlockers = checklist.crce_and_chaos || checklist.hard_blockers || [];
     renderAutonomous(status, liveBlockers);
   } catch (e) {
-    console.error('autonomous', e);
+    const pill = document.getElementById('autonomousPill');
+    pill.textContent = 'AUTO — UNKNOWN';
+    pill.className = 'pill danger';
+    document.getElementById('autoBlockers').style.display = 'block';
+    document.getElementById('autoBlockers').textContent = 'Status unavailable. Previous values may be stale.';
   }
 }
 
@@ -256,10 +263,24 @@ async function emergencyFlatten() {
   alert(result.ok ? 'Confirmed tracked exits completed; trading remains halted.' : 'Exit incomplete. Check broker positions and unresolved orders.');
   await refreshAll();
 }
-async function refreshAll() {
-  await Promise.all([loadKiteStatus(), loadAutonomousPanel(), loadRiskPanel()]);
+let refreshInFlight = null;
+let refreshTimer = null;
+function refreshAll() {
+  if (refreshInFlight) return refreshInFlight;
+  clearTimeout(refreshTimer);
+  document.getElementById('refreshStatus').textContent = 'Checking…';
+  refreshInFlight = Promise.all([loadKiteStatus(), loadAutonomousPanel(), loadRiskPanel()])
+    .finally(() => {
+      document.getElementById('refreshStatus').textContent = 'Last check ' + new Date().toLocaleTimeString('en-IN') + ' · see panel status';
+      refreshInFlight = null;
+      if (!document.hidden) refreshTimer = setTimeout(refreshAll, POLL_MS);
+    });
+  return refreshInFlight;
 }
+document.addEventListener('visibilitychange', () => {
+  clearTimeout(refreshTimer);
+  if (!document.hidden) refreshAll();
+});
 
 handleKiteQueryParams();
 refreshAll();
-setInterval(refreshAll, POLL_MS);
