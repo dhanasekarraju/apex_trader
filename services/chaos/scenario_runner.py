@@ -49,6 +49,8 @@ class ScenarioRunner:
 
     async def run(self, scenario: ChaosScenario) -> ScenarioResult:
         start = time.perf_counter()
+        from services.icb.signals import invalidate_signals_cache
+        invalidate_signals_cache()
         await clear_system_state()
         await icb.recover_safe_mode()
 
