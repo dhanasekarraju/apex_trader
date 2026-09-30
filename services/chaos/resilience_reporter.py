@@ -100,7 +100,8 @@ class ResilienceReporter:
         return (
             classification == StabilityClass.INSTITUTIONAL_GRADE.value
             and score >= _MIN_LIVE_SCORE
-            and not any(not r.safe for r in self.results)
+            and bool(self.results)
+            and all(r.safe and r.passed and not r.failures for r in self.results)
         )
 
     def failure_breakdown(self) -> list[dict]:
