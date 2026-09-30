@@ -332,3 +332,39 @@ def test_synthetic_ohlcv_is_timezone_aware_and_fresh():
     report = DataQualityEngine().assess(df, "CHAOSFRESH")
     assert report.trade_allowed is True
     assert report.stale_seconds < 120
+
+
+@pytest.mark.asyncio
+async def test_portfolio_mismatch_is_reconciled_and_denied(fast_chaos, monkeypatch):
+    monkeypatch.setenv("ENFORCE_MARKET_HOURS", "false")
+    monkeypatch.setenv("TRADING_MODE", "paper")
+    get_settings.cache_clear()
+
+    runner = ScenarioRunner()
+    result = await runner.run(SCENARIO_BY_ID["state_portfolio_mismatch"])
+
+    assert result.passed is True
+    assert result.safe is True
+    assert result.icb_decision == "DENY"
+    assert result.execution_status == ""
+    assert not result.failures
+    assert any("reconciliation_probe=" in x for x in result.observations)
+
+
+@pytest.mark.asyncio
+async def test_duplicate_event_replay_is_blocked_idempotently(fast_chaos, monkeypatch):
+    monkeypatch.setenv("ENFORCE_MARKET_HOURS", "false")
+    monkeypatch.setenv("TRADING_MODE", "paper")
+    get_settings.cache_clear()
+
+    runner = ScenarioRunner()
+    result = await runner.run(SCENARIO_BY_ID["state_duplicate_events"])
+
+    assert result.passed is True
+    assert result.safe is True
+    assert result.execution_status.lower() in ("filled", "partial")
+    assert not result.failures
+    assert any(
+        "duplicate_replay=rejected:" in x and "duplicate" in x.lower()
+        for x in result.observations
+    )
