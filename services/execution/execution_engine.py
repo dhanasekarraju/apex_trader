@@ -99,7 +99,7 @@ class ExecutionEngine:
             decision="EXECUTED",
             reason=str(reconcile_report.get("reconciliation_status", "OK")),
             portfolio=self._portfolio,
-            **{k: v for k, v in reconcile_report.items() if isinstance(v, (str, int, float, bool))},
+            **{k: v for k, v in reconcile_report.items() if isinstance(v, (str, int, float, bool)) and k != "reason"},
         )
         return report
 
