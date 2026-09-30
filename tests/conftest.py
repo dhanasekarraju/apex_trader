@@ -61,6 +61,9 @@ async def isolated_runtime(monkeypatch, tmp_path):
     monkeypatch.setattr(evidence, 'EVIDENCE', tmp_path / 'validation.json')
     import services.control.reconciliation_state as reconcile
     monkeypatch.setattr(reconcile, '_memory_status', None)
+    # Cached health observations must not leak between isolated test runtimes.
+    import services.icb.signals as signals
+    monkeypatch.setattr(signals, '_signals_cache', None)
     import services.execution.idempotency_store as ids
     ids._memory_claims.clear()
     yield

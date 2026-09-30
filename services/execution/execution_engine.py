@@ -97,9 +97,11 @@ class ExecutionEngine:
             event_type=EventType.RECONCILIATION_RUN,
             action="RECONCILE_PORTFOLIO",
             decision="EXECUTED",
-            reason=str(reconcile_report.get("reconciliation_status", "OK")),
+            reason=str(reconcile_report.get("reason") or reconcile_report.get("reconciliation_status", "OK")),
             portfolio=self._portfolio,
-            **{k: v for k, v in reconcile_report.items() if isinstance(v, (str, int, float, bool))},
+            # The detailed warning is already supplied as the recorder's reason.
+            **{k: v for k, v in reconcile_report.items()
+               if k != "reason" and isinstance(v, (str, int, float, bool))},
         )
         return report
 
