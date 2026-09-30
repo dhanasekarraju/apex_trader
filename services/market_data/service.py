@@ -67,7 +67,7 @@ class MarketDataService:
             vol = int(rng.integers(100_000, 2_000_000))
             rows.append({"open": o, "high": h, "low": l, "close": price, "volume": vol})
         df = pd.DataFrame(rows)
-        df.index = pd.date_range(end=pd.Timestamp.now(), periods=bars, freq="15min")
+        df.index = pd.date_range(end=pd.Timestamp.now(tz="Asia/Kolkata"), periods=bars, freq="15min")
         return df
 
     async def _fetch_kite_ohlcv(self, symbol: str, bars: int = 500) -> pd.DataFrame | None:
