@@ -208,8 +208,10 @@ class ScenarioRunner:
                         result.failures.append("Expected API circuit breaker open")
                     result.observations.append(f"circuit={circuit}")
 
-                result.safe = self._validate_safety(result, scenario, portfolio_before)
-                result.passed = result.safe and self._validate_expectations(result, scenario)
+                safety_ok = self._validate_safety(result, scenario, portfolio_before)
+                expectations_ok = self._validate_expectations(result, scenario)
+                result.safe = safety_ok and expectations_ok and not result.failures
+                result.passed = result.safe
 
         except Exception as exc:
             result.failures.append(f"Scenario exception: {exc}")
