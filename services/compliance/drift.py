@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 from services.compliance.events import EventType
@@ -19,10 +20,35 @@ class DriftDetector:
         return self._scan_events(events)
 
     def scan_recent(self, limit: int = 800) -> list[dict[str, Any]]:
-        """Scan only recent events — fast path for ICB on large ledgers."""
-        events = self.store.load_all()
-        if len(events) > limit:
-            events = events[-limit:]
+        """Scan only the recent tail without parsing the entire compliance ledger."""
+        if limit <= 0 or not self.store.path.is_file():
+            return []
+
+        block_size = 64 * 1024
+        with self.store.path.open("rb") as handle:
+            handle.seek(0, 2)
+            remaining = handle.tell()
+            buffer = b""
+            lines: list[bytes] = []
+
+            while remaining > 0 and len(lines) <= limit:
+                read_size = min(block_size, remaining)
+                remaining -= read_size
+                handle.seek(remaining)
+                buffer = handle.read(read_size) + buffer
+                lines = buffer.splitlines()
+
+        events: list[dict[str, Any]] = []
+        for raw in lines[-limit:]:
+            if not raw.strip():
+                continue
+            try:
+                event = json.loads(raw.decode("utf-8"))
+            except (UnicodeDecodeError, json.JSONDecodeError):
+                continue
+            if isinstance(event, dict):
+                events.append(event)
+
         return self._scan_events(events)
 
     def _scan_events(self, events: list[dict]) -> list[dict[str, Any]]:
