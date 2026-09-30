@@ -303,3 +303,18 @@ async def test_reconciliation_drift_invalidates_cached_icb_signals(fast_chaos, m
     assert result.safe is True
     assert result.icb_decision == "DENY"
     assert not result.failures
+
+
+def test_live_capital_rejects_any_failed_scenario():
+    results = [
+        ScenarioResult(
+            "state_reconciliation_drift",
+            passed=False,
+            safe=True,
+            duration_ms=10,
+            icb_decision="ALLOW",
+            failures=["Expected ICB deny under reconciliation drift"],
+        ),
+    ]
+    reporter = ResilienceReporter(results)
+    assert reporter.safe_for_live_capital() is False
