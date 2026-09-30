@@ -32,9 +32,31 @@ class ResilienceReporter:
         safe = sum(1 for r in self.results if r.safe)
         executed = [r for r in self.results if r.execution_status.lower() in ("filled", "partial")]
         rejected = [r for r in self.results if r.execution_status.lower() == "rejected"]
-        kill_correct = sum(
-            1 for r in self.results
-            if r.kill_switch_triggered or r.safe_mode_triggered or r.icb_decision == "DENY"
+        protection_results = []
+        for r in self.results:
+            scenario = SCENARIO_BY_ID.get(r.scenario_id)
+            if scenario is None:
+                continue
+            required = bool(
+                scenario.expect_deny
+                or scenario.expect_safe_mode
+                or scenario.expect_kill_switch
+            )
+            if not required:
+                continue
+            denied = r.icb_decision == "DENY" or r.execution_status.upper() in (
+                "REJECTED", "NO_TRADE", "REJECT",
+            )
+            correct = (
+                (not scenario.expect_deny or denied)
+                and (not scenario.expect_safe_mode or r.safe_mode_triggered)
+                and (not scenario.expect_kill_switch or r.kill_switch_triggered)
+            )
+            protection_results.append(correct)
+        protection_accuracy = (
+            sum(1 for ok in protection_results if ok) / len(protection_results) * 100
+            if protection_results
+            else 100.0
         )
         reconciled = sum(1 for r in self.results if r.reconciliation_ok)
         duplicates = sum(1 for r in self.results if r.duplicate_detected)
@@ -43,7 +65,7 @@ class ResilienceReporter:
         return {
             "order_success_rate_under_failure_pct": round(len(executed) / total * 100, 1),
             "order_rejection_rate_pct": round(len(rejected) / total * 100, 1),
-            "kill_switch_accuracy_pct": round(kill_correct / total * 100, 1),
+            "kill_switch_accuracy_pct": round(protection_accuracy, 1),
             "reconciliation_drift_rate_pct": round((total - reconciled) / total * 100, 1),
             "duplicate_order_detection_rate_pct": round((1 - duplicates / total) * 100, 1),
             "system_recovery_time_ms": round(avg_recovery, 1),
