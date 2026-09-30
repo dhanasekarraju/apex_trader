@@ -12,6 +12,8 @@ from shared.config import get_settings
 
 _SIGNALS_CACHE_TTL_SEC = 60.0
 _signals_cache: tuple[float, "SystemSignals"] | None = None
+_signals_generation = 0
+_signals_lock = asyncio.Lock()
 
 
 @dataclass
@@ -23,7 +25,8 @@ class SystemSignals:
 
 
 def invalidate_signals_cache() -> None:
-    global _signals_cache
+    global _signals_cache, _signals_generation
+    _signals_generation += 1
     _signals_cache = None
 
 
@@ -33,9 +36,22 @@ async def collect_signals(context: dict[str, Any]) -> SystemSignals:
     if _signals_cache and (now - _signals_cache[0]) < _SIGNALS_CACHE_TTL_SEC:
         return _signals_cache[1]
 
-    signals = await _collect_signals_inner(context)
-    _signals_cache = (now, signals)
-    return signals
+    async with _signals_lock:
+        while True:
+            now = time.monotonic()
+            if _signals_cache and (now - _signals_cache[0]) < _SIGNALS_CACHE_TTL_SEC:
+                return _signals_cache[1]
+
+            generation = _signals_generation
+            signals = await _collect_signals_inner(context)
+
+            # A reconciliation transition during collection invalidates the snapshot.
+            # Recompute under the same single-flight lock rather than publishing stale state.
+            if generation != _signals_generation:
+                continue
+
+            _signals_cache = (time.monotonic(), signals)
+            return signals
 
 
 async def _collect_signals_inner(context: dict[str, Any]) -> SystemSignals:
