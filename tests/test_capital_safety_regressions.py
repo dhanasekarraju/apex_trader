@@ -67,12 +67,13 @@ async def test_lifecycle_accounts_actual_partial_fill():
     lifecycle = PositionLifecycleService(portfolio=pf, execution=execution, market_data=Mock())
     lifecycle._ltps = AsyncMock(return_value={'TEST':110})
     lifecycle._close_position = AsyncMock()
-    await lifecycle._check_position(pf.state.positions[0], NS(fetch_order_status=AsyncMock(return_value={'status':'TRIGGER PENDING'})), 'live')
+    await lifecycle._check_position(pf.state.positions[0], NS(fetch_order_status=AsyncMock(return_value={'status':'TRIGGER PENDING','pending_quantity':10,'filled_quantity':0,'trigger_price':95,'tradingsymbol':'TEST','transaction_type':'SELL','exchange':'NSE','product':'MIS','order_type':'SL-M'})), 'live')
     assert lifecycle._close_position.call_args.kwargs['qty'] == 4
 
 @pytest.mark.asyncio
 async def test_target_cancels_and_confirms_stop_before_selling():
     get_settings().trading_mode = 'live'
+    get_settings().default_broker = 'kite'
     pf = PortfolioManager()
     pf.state.positions = [position()]
     engine = ExecutionEngine(portfolio=pf)
@@ -91,6 +92,7 @@ async def test_target_cancels_and_confirms_stop_before_selling():
 @pytest.mark.asyncio
 async def test_unconfirmed_stop_cancel_never_sells():
     get_settings().trading_mode = 'live'
+    get_settings().default_broker = 'kite'
     pf = PortfolioManager()
     pf.state.positions = [position()]
     engine = ExecutionEngine(portfolio=pf)
@@ -104,6 +106,7 @@ async def test_unconfirmed_stop_cancel_never_sells():
 @pytest.mark.asyncio
 async def test_stop_fill_race_does_not_double_sell():
     get_settings().trading_mode = 'live'
+    get_settings().default_broker = 'kite'
     pf = PortfolioManager()
     pf.state.positions = [position()]
     engine = ExecutionEngine(portfolio=pf)
@@ -129,6 +132,7 @@ async def test_failed_flatten_preserves_exposure():
 async def test_live_timeout_submits_once_and_latches_unknown():
     cfg = get_settings()
     cfg.trading_mode = 'live'
+    cfg.default_broker = 'kite'
     cfg.external_api_timeout_sec = 0.01
     pf = PortfolioManager()
     engine = ExecutionEngine(portfolio=pf)

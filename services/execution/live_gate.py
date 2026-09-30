@@ -21,6 +21,9 @@ class LiveSafetyGate:
     ) -> tuple[bool, list[str]]:
         cfg = settings or get_settings()
         blockers: list[str] = []
+        from services.control.execution_owner import execution_owner
+        if cfg.trading_mode == "live" and not execution_owner.active:
+            blockers.append("Live execution ownership is absent; restart with one PostgreSQL-backed trading process")
 
         if not await market_data.verify_real_data():
             blockers.append("Real market data not configured or fetch failed")

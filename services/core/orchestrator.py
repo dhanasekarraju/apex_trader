@@ -70,7 +70,11 @@ class TradingOrchestrator:
         from services.icb.engine import icb
         from services.icb.system_state import get_kill_switch_latched
 
-        await self.portfolio.load()
+        if not await self.portfolio.load():
+            raise RuntimeError("Portfolio recovery failed; refusing to run with default capital")
+        from services.autonomous.state import set_autonomous_running
+        # Redis can survive an unclean shutdown. Never inherit its old run flag.
+        await set_autonomous_running(False)
         await kite_auth.startup()
         self.data._real_data_ok = None
         from services.control.halt import set_emergency_halt
@@ -83,7 +87,7 @@ class TradingOrchestrator:
         await self.refresh_control_cache()
         if self.cfg.autonomous_auto_start and self.cfg.autonomous_enabled:
             if not self.portfolio.is_trading_halted() and not await get_kill_switch_latched():
-                await self.autonomous.start()
+                await self.autonomous.start(automatic=True)
         audit("orchestrator_startup", **recovery)
 
     async def sync_capital_from_kite(self, *, force: bool = False) -> dict:
@@ -142,7 +146,7 @@ class TradingOrchestrator:
         return self.risk_dashboard.compute(pnl_snapshot)
 
     async def shutdown(self) -> None:
-        await self.autonomous.stop()
+        await self.autonomous.stop(operator_pause=False)
         await self.portfolio.persist()
         await self.execution.shutdown()
         audit("orchestrator_shutdown")

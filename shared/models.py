@@ -181,3 +181,10 @@ class DeadLetterOrder(Base):
     payload: Mapped[str] = mapped_column(Text, default="{}")
     status: Mapped[str] = mapped_column(String(24), default="pending_review", index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class OperatorControl(Base):
+    """Persistent operator choices; not cleared by Redis restarts or EOD processing."""
+    __tablename__ = "operator_controls"
+    key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=False)

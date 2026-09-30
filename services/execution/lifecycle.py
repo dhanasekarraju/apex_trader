@@ -75,17 +75,33 @@ class PositionLifecycleService:
     async def _check_position(self, pos, broker, mode: str) -> bool:
         symbol = pos.symbol.upper()
 
-        if pos.stop_order_id and mode == "live" and hasattr(broker, "fetch_order_status"):
+        if mode == "live":
+            from services.control.reconciliation_state import set_reconciliation_degraded
+            from services.execution.protection import stop_problem, stop_identity_problem
+            if not pos.stop_order_id:
+                await set_reconciliation_degraded(f"Unprotected position {symbol}; broker review required")
+                return False
             status = await broker.fetch_order_status(pos.stop_order_id)
+            identity_problem = stop_identity_problem(status, symbol=symbol, product=self.cfg.kite_product, exchange=self.cfg.kite_exchange)
+            if identity_problem:
+                await set_reconciliation_degraded(f"{symbol}: {identity_problem}")
+                return False
             if status.get("status") == "COMPLETE":
+                filled = float(status.get("filled_quantity") or 0)
                 exit_price = float(status.get("average_price") or 0)
-                await self._close_position(
-                    symbol=symbol,
-                    exit_price=exit_price,
-                    exit_reason="stop_loss",
-                    qty=min(pos.qty, float(status.get("filled_quantity") or 0)),
-                )
+                # Never repeatedly book a cumulative partial fill against a residual.
+                # Partial/ambiguous stops require order-history reconciliation.
+                if abs(filled - pos.qty) > 0.0001 or exit_price <= 0:
+                    await set_reconciliation_degraded(f"Ambiguous stop fill {symbol}; retain ledger for review")
+                    return False
+                await self._close_position(symbol=symbol, exit_price=exit_price,
+                                           exit_reason="stop_loss", qty=filled)
                 return True
+            problem = stop_problem(status, symbol=symbol, qty=pos.qty,
+                                   product=self.cfg.kite_product, exchange=self.cfg.kite_exchange)
+            if problem:
+                await set_reconciliation_degraded(f"{symbol}: {problem}; broker review required")
+                return False
 
         ltps = await self._ltps([symbol])
         ltp = ltps.get(symbol, 0.0)

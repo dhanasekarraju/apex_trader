@@ -26,7 +26,9 @@ services:
     container_name: apex_trader_redis
     restart: unless-stopped
     # Host 6389 — avoids rubaih :6380 and greeks :6388 (and system :6379)
-    command: redis-server --appendonly yes --bind 0.0.0.0 --protected-mode no
+    command: redis-server --appendonly yes --maxmemory-policy noeviction --bind 0.0.0.0 --protected-mode no
+    volumes:
+      - redisdata:/data
     ports:
       - "127.0.0.1:6389:6379"
     networks:
@@ -39,12 +41,15 @@ services:
       start_period: 5s
 
   api:
-    build: .
+    build:
+      context: .
+      args:
+        BUILD_REVISION: ${APEX_REVISION:-unknown}
     container_name: apex_trader_api
     restart: unless-stopped
     # Host 8090 — rubaih nginx is :8080, greeks nginx is :8088
     ports:
-      - "8090:8080"
+      - "127.0.0.1:8090:8080"
     env_file:
       - .env
     environment:
@@ -52,6 +57,7 @@ services:
       DATABASE_URL_SYNC: postgresql://apex:${POSTGRES_PASSWORD:-apex}@postgres:5432/apex_trader
       REDIS_URL: redis://redis:6379/0
       API_PORT: "8080"
+      WEB_CONCURRENCY: "1"
     volumes:
       - ./data:/app/data
     depends_on:
@@ -70,6 +76,7 @@ services:
     stop_grace_period: 30s
 
 volumes:
+  redisdata:
   pgdata:
 
 networks:

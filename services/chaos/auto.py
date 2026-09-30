@@ -40,6 +40,10 @@ async def ensure_fresh_report(*, quick: bool = False) -> bool:
 
     Returns True if a run was started, False if one was already in progress.
     """
+    from shared.config import get_settings
+    if get_settings().trading_mode == "live":
+        audit("chaos_auto_refresh_blocked", reason="Never run stress scenarios in a live process")
+        return False
     global _task
     if is_running():
         return False

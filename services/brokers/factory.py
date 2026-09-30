@@ -39,7 +39,7 @@ def get_broker(mode: str | None = None) -> BrokerAdapter:
         elif name == "ccxt":
             broker = CCXTBroker()
         else:
-            broker = PaperBroker()
+            raise ValueError(f"Unsupported live broker: {name}")
 
     _cached = broker
     _cached_key = key

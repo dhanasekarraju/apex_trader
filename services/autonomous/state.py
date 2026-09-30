@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from shared.events import cache_get, cache_set, publish
 from shared.logging import audit
 from services.gateway.desk_snapshot import observe
+from shared.database import SessionLocal
 
 ENABLED_KEY = "apex:autonomous:enabled"
 STATUS_KEY = "apex:autonomous:status"
@@ -45,3 +46,25 @@ async def set_autonomous_status(status: dict) -> None:
     status["updated_at"] = datetime.now(timezone.utc).isoformat()
     observe("autonomous", status)
     await cache_set(STATUS_KEY, json.dumps(status, default=str), ttl=3600)
+
+
+async def operator_paused() -> bool:
+    from shared.models import OperatorControl
+    try:
+        async with SessionLocal() as session:
+            row = await session.get(OperatorControl, "entries_paused")
+            return bool(row and row.enabled)
+    except Exception:
+        return True  # Unknown operator intent must not auto-enable entries.
+
+
+async def set_operator_paused(paused: bool) -> None:
+    from shared.models import OperatorControl
+    async with SessionLocal() as session:
+        row = await session.get(OperatorControl, "entries_paused")
+        if row is None:
+            row = OperatorControl(key="entries_paused", enabled=paused)
+            session.add(row)
+        else:
+            row.enabled = paused
+        await session.commit()

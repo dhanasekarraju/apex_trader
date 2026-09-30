@@ -9,7 +9,7 @@ from typing import Literal
 import asyncio
 import json
 
-from fastapi import Depends, FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect
+from fastapi import Depends, FastAPI, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
@@ -107,6 +107,8 @@ async def _warmup_dynamic_universe() -> None:
 def ensure_background_loops() -> None:
     """Start background loops if missing — survives partial startup failures."""
     global _refresh_task, _lifecycle_task, _autonomous_task
+    if not getattr(app.state, "initialized", False):
+        return
     if not _task_alive(_refresh_task):
         _refresh_task = asyncio.create_task(_control_refresh_loop())
         audit("background_loop_started", loop="control_refresh")
@@ -121,68 +123,48 @@ def ensure_background_loops() -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global _refresh_task, _lifecycle_task, _autonomous_task
+    from services.control.execution_owner import execution_owner
+    from services.compliance.recorder import crce
+    from shared.database import engine
     setup_logging()
-    startup_errors: list[str] = []
-    try:
-        await init_db()
-    except Exception as e:
-        startup_errors.append(f"init_db: {e}")
-    try:
-        from services.compliance.recorder import crce
-
-        await crce.recover()
-    except Exception as e:
-        startup_errors.append(f"crce_recover: {e}")
-    try:
-        await orch.startup()
-    except Exception as e:
-        startup_errors.append(f"orchestrator_startup: {e}")
-    ensure_background_loops()
-    _cfg = get_settings()
-    # Loud, unmissable banner of the EFFECTIVE mode this process actually resolved.
-    # If this says 'paper' while your .env says live, the container is stale —
-    # run: docker compose up -d --force-recreate api
-    audit(
-        "startup_trading_mode",
-        trading_mode=_cfg.trading_mode,
-        enable_live_execution=_cfg.enable_live_execution,
-        default_broker=_cfg.default_broker,
-        golive_approved=_cfg.golive_approved,
-    )
-    if _cfg.enable_live_execution and _cfg.trading_mode != "live":
-        audit(
-            "startup_mode_mismatch",
-            warning="ENABLE_LIVE_EXECUTION=true but TRADING_MODE is not 'live' — "
-            "container likely stale; recreate it (docker compose up -d --force-recreate api)",
-            trading_mode=_cfg.trading_mode,
-        )
-    if get_settings().watchlist_mode == "dynamic":
-        asyncio.create_task(_warmup_dynamic_universe())
-    # Self-heal a stale/missing chaos report so live trading isn't blocked at open.
+    app.state.initialized = False
+    owner_acquired = False
+    initialized = False
     try:
         if get_settings().trading_mode == "live":
-            from services.chaos.live_gate import ChaosLiveGate
-
-            if ChaosLiveGate.rerun_recommended():
-                from services.chaos.auto import ensure_fresh_report
-
-                await ensure_fresh_report(quick=False)
-    except Exception as e:
-        startup_errors.append(f"chaos_autoheal: {e}")
-    if startup_errors:
-        audit("startup_degraded", errors=startup_errors)
-    yield
-    for task in (_refresh_task, _lifecycle_task, _autonomous_task):
-        if task:
-            task.cancel()
-            try:
-                await task
-            except asyncio.CancelledError:
-                pass
-    try:
-        await orch.shutdown()
-    except Exception as e:
-        audit("shutdown_failed", error=str(e))
+            await execution_owner.acquire(engine)
+            owner_acquired = True
+        # Do not continue with default capital or an unrecovered ledger.
+        await init_db()
+        await crce.recover()
+        await orch.startup()
+        initialized = True
+        app.state.initialized = True
+        ensure_background_loops()
+        audit("startup_trading_mode", trading_mode=get_settings().trading_mode,
+              enable_live_execution=get_settings().enable_live_execution)
+        if get_settings().watchlist_mode == "dynamic":
+            # Existing scan work will populate the universe; no startup stress suite.
+            audit("universe_warmup_deferred", reason="Normal engine cycle owns market work")
+        yield
+    finally:
+        app.state.initialized = False
+        for task in (_refresh_task, _lifecycle_task, _autonomous_task):
+            if task:
+                task.cancel()
+        for task in (_refresh_task, _lifecycle_task, _autonomous_task):
+            if task:
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
+        _refresh_task = _lifecycle_task = _autonomous_task = None
+        try:
+            if initialized:
+                await orch.shutdown()
+        finally:
+            if owner_acquired:
+                await execution_owner.close()
 
 
 app = FastAPI(
@@ -286,12 +268,30 @@ async def health():
         "ok": True,
         "service": "apex-trader",
         "version": "2.0.0",
+        "revision": __import__("os").environ.get("APEX_REVISION", "unknown"),
         "mode": cfg.trading_mode,
         "env": cfg.env,
         "live_enabled": cfg.enable_live_execution,
         "base_path": _base_path(),
         "public_url": cfg.public_url,
     }
+
+
+@app.get("/api/ready", dependencies=[Depends(require_api_auth)])
+async def process_readiness(response: Response):
+    from services.control.execution_owner import execution_owner
+    from services.control.reconciliation_state import peek_reconciliation_status
+    loops = {"control": _task_alive(_refresh_task), "lifecycle": _task_alive(_lifecycle_task),
+             "autonomous": _task_alive(_autonomous_task)}
+    process_ready = bool(getattr(app.state, "initialized", False) and all(loops.values())
+                         and orch.portfolio.persistence_ok
+                         and (get_settings().trading_mode != "live" or execution_owner.active))
+    response.status_code = 200 if process_ready else 503
+    response.headers["Cache-Control"] = "private, no-store"
+    return {"process_ready": process_ready, "loops": loops,
+            "reconciliation": peek_reconciliation_status(),
+            "trading_halted": orch.portfolio.is_trading_halted(),
+            "note": "Process readiness does not authorize live orders; execution gates still apply"}
 
 
 @app.get("/api/desk/snapshot", dependencies=[Depends(require_api_auth)])
@@ -505,22 +505,45 @@ async def kite_login():
     """Authenticated OAuth start; credentials never appear in the URL."""
     from services.brokers.kite_auth import kite_auth
     try:
-        return RedirectResponse(kite_auth.login_url())
+        import secrets
+        from urllib.parse import urlencode
+        state = secrets.token_urlsafe(32)
+        login = kite_auth.login_url()
+        params = urlencode({"redirect_params": urlencode({"apex_state": state})})
+        response = RedirectResponse(login + ("&" if "?" in login else "?") + params)
+        response.set_cookie("__Host-apex_oauth_state", state, max_age=600,
+                            httponly=True, secure=True, samesite="lax", path="/")
+        response.headers["Cache-Control"] = "no-store"
+        return response
     except ValueError as e:
         raise HTTPException(400, str(e)) from e
 
 
 @app.get("/api/kite/callback", dependencies=[Depends(require_api_auth)])
 async def kite_callback(
+    request: Request,
+    apex_state: str | None = Query(default=None),
     request_token: str | None = Query(default=None),
     status: str | None = Query(default=None),
 ):
     from services.brokers.kite_auth import kite_auth
 
+    import secrets
+    cookie_state = request.cookies.get("__Host-apex_oauth_state", "")
+    if not apex_state or not cookie_state or not secrets.compare_digest(apex_state, cookie_state):
+        raise HTTPException(403, "Kite login state invalid or expired; start login from the dashboard")
+
+    def completed_redirect(url):
+        response = RedirectResponse(url)
+        response.delete_cookie("__Host-apex_oauth_state", path="/", secure=True, httponly=True, samesite="lax")
+        response.headers["Cache-Control"] = "no-store"
+        response.headers["Referrer-Policy"] = "no-referrer"
+        return response
+
     if status and status != "success":
-        return RedirectResponse(_app_url("/?kite=error&reason=login_cancelled"))
+        return completed_redirect(_app_url("/?kite=error&reason=login_cancelled"))
     if not request_token:
-        return RedirectResponse(_app_url("/?kite=error&reason=missing_token"))
+        return completed_redirect(_app_url("/?kite=error&reason=missing_token"))
 
     try:
         await kite_auth.complete_login(request_token)
@@ -528,11 +551,10 @@ async def kite_callback(
         orch.execution.refresh_broker()
         await orch.execution.connect()
         await orch.sync_capital_from_kite(force=True)
-        return RedirectResponse(_app_url("/?kite=connected"))
+        return completed_redirect(_app_url("/?kite=connected"))
     except Exception as e:
-        import urllib.parse
-        reason = urllib.parse.quote(str(e)[:120])
-        return RedirectResponse(_app_url(f"/?kite=error&reason={reason}"))
+        audit("kite_callback_failed", error_type=type(e).__name__)
+        return completed_redirect(_app_url("/?kite=error&reason=broker_login_failed"))
 
 
 @app.post("/api/kite/disconnect", dependencies=[Depends(require_api_auth)])
@@ -552,6 +574,8 @@ async def set_mode(req: ModeRequest):
     if mode not in ("paper", "shadow", "live"):
         raise HTTPException(400, "Invalid mode — use paper, shadow, or live")
 
+    if mode != get_settings().trading_mode and "live" in (mode, get_settings().trading_mode):
+        raise HTTPException(409, "Changing into or out of live mode requires a flat, reconciled restart to establish execution ownership")
     if mode != get_settings().trading_mode:
         if orch.portfolio.state.positions or await orch.execution._trades.open_trades():
             raise HTTPException(409, "Close and reconcile all positions/orders before changing mode")
@@ -857,6 +881,8 @@ async def _run_chaos_background(*, quick: bool) -> None:
     global _chaos_run_status
     _chaos_run_status = {"running": True, "error": "", "finished_at": None}
     try:
+        if get_settings().trading_mode == "live":
+            raise HTTPException(409, "Stress testing is disabled in live processes; use an isolated paper environment")
         from services.chaos.chaos_engine import chaos_engine
 
         report = await chaos_engine.run_suite(quick=quick)
@@ -880,6 +906,8 @@ async def chaos_run(
     quick: bool = Query(default=False),
     background: bool = Query(default=False),
 ):
+    if get_settings().trading_mode == "live":
+        raise HTTPException(409, "Stress testing is disabled in live processes; use an isolated paper environment")
     from services.chaos.chaos_engine import chaos_engine
     from services.icb.actions import ICBAction
     from services.icb.engine import icb
@@ -927,6 +955,8 @@ async def chaos_run_status():
 
 @app.post("/api/chaos/run/{scenario_id}", dependencies=[Depends(require_api_auth)])
 async def chaos_run_scenario(scenario_id: str):
+    if get_settings().trading_mode == "live":
+        raise HTTPException(409, "Stress testing is disabled in live processes; use an isolated paper environment")
     from services.chaos.chaos_engine import chaos_engine
     from services.icb.actions import ICBAction
     from services.icb.engine import icb
@@ -953,6 +983,8 @@ async def chaos_run_scenario(scenario_id: str):
 
 @app.get("/api/chaos/report", dependencies=[Depends(require_api_auth)])
 async def chaos_report():
+    if get_settings().trading_mode == "live":
+        raise HTTPException(409, "Stress testing is disabled in live processes; use an isolated paper environment")
     from services.chaos.chaos_engine import chaos_engine
     from services.chaos.live_gate import ChaosLiveGate
 

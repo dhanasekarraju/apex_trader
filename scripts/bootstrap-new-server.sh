@@ -7,6 +7,12 @@ DOMAIN="${APEX_DOMAIN:-tn88seval.in}"
 APP_DIR="${APEX_DIR:-/home/ubuntu/apex_trader}"
 SERVER_IP="${APEX_SERVER_IP:-103.194.228.130}"
 
+if [ -e "/etc/nginx/sites-enabled/$DOMAIN" ] || [ -e "/etc/nginx/sites-available/$DOMAIN" ]; then
+  echo "Existing Nginx site detected. Refusing to overwrite other applications."
+  echo "Use docs/PRODUCTION_ROLLOUT.md and the separate apex-trader location snippet."
+  exit 1
+fi
+
 echo "=== Apex Trader full setup: $DOMAIN ($SERVER_IP) ==="
 
 if ! command -v docker >/dev/null 2>&1; then

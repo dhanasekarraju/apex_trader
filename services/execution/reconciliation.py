@@ -9,6 +9,7 @@ async def reconcile_on_startup(*, broker, portfolio, trades, trading_mode: str) 
     if trading_mode in ("paper", "shadow"):
         if hasattr(broker, "_open_positions"):
             broker._open_positions = [dict(symbol=p.symbol, qty=p.qty, entry=p.entry) for p in portfolio.state.positions]
+        await clear_reconciliation_degraded()
         return {**report, "reconciliation_status": "OK", "broker_positions": len(portfolio.state.positions)}
     try:
         positions = await broker.fetch_open_positions()
@@ -30,8 +31,13 @@ async def reconcile_on_startup(*, broker, portfolio, trades, trading_mode: str) 
                 issues.append(f"Missing protective stop: {symbol}")
             else:
                 stop = await broker.fetch_order_status(p.stop_order_id)
-                if stop.get("status") not in ("OPEN", "TRIGGER PENDING", "COMPLETE"):
-                    issues.append(f"Stop not confirmed: {symbol}")
+                from services.execution.protection import stop_problem
+                from shared.config import get_settings
+                cfg = get_settings()
+                problem = stop_problem(stop, symbol=symbol, qty=p.qty,
+                    product=b.get("product", cfg.kite_product), exchange=b.get("exchange", cfg.kite_exchange))
+                if problem:
+                    issues.append(f"Stop not confirmed: {symbol}: {problem}")
         for symbol in internal.keys() - seen:
             issues.append(f"Position absent at broker: {symbol}; confirm exit executions before accounting")
         if issues:

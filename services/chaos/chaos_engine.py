@@ -25,6 +25,7 @@ class ChaosEngine:
         self.last_report: dict | None = None
 
     async def run_scenario(self, scenario_id: str) -> ScenarioResult:
+        self._require_isolated_mode()
         scenario = SCENARIO_BY_ID.get(scenario_id)
         if scenario is None:
             raise ValueError(f"Unknown chaos scenario: {scenario_id}")
@@ -39,6 +40,7 @@ class ChaosEngine:
         quick: bool = False,
     ) -> dict:
         """Run chaos scenarios and generate institutional resilience report."""
+        self._require_isolated_mode()
         from services.compliance.store import EventStore
 
         integrity = EventStore().verify_chain()
@@ -69,6 +71,12 @@ class ChaosEngine:
             classification=self.last_report["stability_classification"],
         )
         return self.last_report
+
+    @staticmethod
+    def _require_isolated_mode():
+        from shared.config import get_settings
+        if get_settings().trading_mode == "live":
+            raise RuntimeError("Stress tests must run in a separate paper process with isolated storage")
 
     async def run_category(self, category: str) -> dict:
         filtered = [s for s in CHAOS_SCENARIOS if s.category.value == category]

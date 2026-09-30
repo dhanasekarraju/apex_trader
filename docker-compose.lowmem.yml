@@ -13,7 +13,7 @@ services:
     ports: []
 
   redis:
-    command: redis-server --maxmemory 32mb --maxmemory-policy allkeys-lru --save ""
+    command: redis-server --appendonly yes --maxmemory 32mb --maxmemory-policy noeviction
     mem_limit: 48m
     ports: []
 

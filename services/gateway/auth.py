@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import secrets
 
-from fastapi import HTTPException, Security, WebSocket, status
+from fastapi import HTTPException, Request, Security, WebSocket, status
 from fastapi.security import APIKeyHeader, HTTPAuthorizationCredentials, HTTPBearer, HTTPBasic, HTTPBasicCredentials
 
 from shared.config import Settings, get_settings
@@ -47,10 +47,15 @@ def verify_api_token(token: str | None, cfg: Settings | None = None) -> None:
 
 
 async def require_api_auth(
+    request: Request,
     x_api_key: str | None = Security(_api_key_header),
     credentials: HTTPAuthorizationCredentials | None = Security(_bearer),
     basic: HTTPBasicCredentials | None = Security(_basic),
 ) -> None:
+    if request.method not in ("GET", "HEAD", "OPTIONS"):
+        origin = request.headers.get("origin")
+        if (origin and origin.rstrip("/") not in cors_allowed_origins()) or request.headers.get("sec-fetch-site") == "cross-site":
+            raise HTTPException(403, "Cross-origin trading actions are not permitted")
     if basic:
         verify_api_token(basic.password if basic.username == "apex" else None)
         return

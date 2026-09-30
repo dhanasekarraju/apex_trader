@@ -259,27 +259,11 @@ class KiteBroker(BrokerAdapter):
         return round(round(price / tick) * tick, 2)
 
     async def _submit_order(self, params: dict) -> str:
-        loop = asyncio.get_event_loop()
-        # Auto-slice only when explicitly enabled AND the order is large enough to
-        # exceed an exchange freeze limit (F&O). Regular equity orders cannot be
-        # auto-sliced ("cannot autoslice this instrument"), so we fall back.
-        use_slice = (
-            self.cfg.kite_autoslice
-            and int(params.get("quantity", 0)) >= self.cfg.kite_autoslice_min_qty
-            and hasattr(self._kite, "place_autoslice_order")
-        )
-        if use_slice:
-            try:
-                resp = await loop.run_in_executor(
-                    None, partial(self._kite.place_autoslice_order, **params)
-                )
-                return self._extract_order_id(resp)
-            except Exception as e:
-                if "autoslice" in str(e).lower() or "slice" in str(e).lower():
-                    audit("kite_autoslice_fallback", symbol=params.get("tradingsymbol"), error=str(e))
-                else:
-                    raise
-        resp = await loop.run_in_executor(
+        from services.control.execution_owner import require_execution_owner
+        if self.cfg.kite_autoslice:
+            raise RuntimeError("Auto-slice is unsupported until all child orders can be reconciled")
+        await require_execution_owner()
+        resp = await asyncio.get_event_loop().run_in_executor(
             None, partial(self._kite.place_order, **params)
         )
         return self._extract_order_id(resp)
@@ -297,6 +281,8 @@ class KiteBroker(BrokerAdapter):
         return str(resp)
 
     async def cancel_order(self, broker_order_id: str) -> bool:
+        from services.control.execution_owner import require_execution_owner
+        await require_execution_owner()
         if not self._kite:
             return False
         try:
@@ -409,6 +395,7 @@ class KiteBroker(BrokerAdapter):
                 "filled_quantity": float(last.get("filled_quantity") or 0),
                 "pending_quantity": float(last.get("pending_quantity") or 0),
                 "quantity": float(last.get("quantity") or 0),
+                **{k: last.get(k) for k in ("tradingsymbol", "transaction_type", "product", "exchange", "order_type", "trigger_price")},
             }
         except Exception as e:
             audit("kite_order_status_failed", order_id=broker_order_id, error=str(e))

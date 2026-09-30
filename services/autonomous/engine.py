@@ -38,6 +38,7 @@ class AutonomousEngine:
         self._last_cycle_at: datetime | None = None
         self._last_square_off_day: str = ""
         self._running = False
+        self._start_stop_lock = asyncio.Lock()
 
     async def maybe_eod_square_off(self) -> dict | None:
         """Once per IST day after mis_square_off_time, flatten MIS book.
@@ -66,7 +67,7 @@ class AutonomousEngine:
             self._last_square_off_day = day_key
             return {"skipped": "shadow_flat", "day": day_key}
 
-        await self.stop()
+        await self.stop(operator_pause=False)
         result = await self.orch.execution.eod_square_off(
             reason=f"mis_eod_square_off@{cfg.mis_square_off_time}_IST"
         )
@@ -84,7 +85,14 @@ class AutonomousEngine:
         audit("mis_eod_square_off_done", **result, day=day_key, had_open=open_n)
         return result
 
-    async def start(self) -> dict:
+    async def start(self, *, automatic: bool = False) -> dict:
+        async with self._start_stop_lock:
+            return await self._start(automatic=automatic)
+
+    async def _start(self, *, automatic: bool) -> dict:
+        from services.autonomous.state import operator_paused, set_operator_paused
+        if automatic and await operator_paused():
+            return {"ok": False, "running": False, "blockers": ["Entries paused by operator"]}
         from services.autonomous.state import set_autonomous_running
         from services.icb.actions import ICBAction
         from services.icb.engine import icb
@@ -109,6 +117,8 @@ class AutonomousEngine:
         if not icb_result.allowed:
             return {"ok": False, "running": False, "blockers": [icb_result.reason]}
 
+        if not automatic:
+            await set_operator_paused(False)
         await set_autonomous_running(True)
         self._running = True
         audit("autonomous_engine_started", mode=self.cfg.trading_mode)
@@ -124,7 +134,8 @@ class AutonomousEngine:
         self.cfg = cfg
         if not (cfg.autonomous_auto_start and cfg.autonomous_enabled):
             return
-        if await is_autonomous_running():
+        from services.autonomous.state import operator_paused
+        if await operator_paused() or await is_autonomous_running():
             return
         if not self._in_session():
             return
@@ -135,34 +146,25 @@ class AutonomousEngine:
             await self._auto_heal_chaos(blockers)
             audit("autonomous_auto_start_blocked", blockers=blockers[:3])
             return
-        result = await self.start()
+        result = await self.start(automatic=True)
         if result.get("ok"):
             audit("autonomous_auto_started", mode=cfg.trading_mode)
         else:
             audit("autonomous_auto_start_failed", blockers=result.get("blockers"))
 
     async def _auto_heal_chaos(self, blockers: list[str]) -> None:
-        """If autonomous is blocked only by a stale/missing chaos report, refresh it."""
-        if self.cfg.trading_mode != "live":
-            return
-        if not any("chaos" in b.lower() for b in blockers):
-            return
-        from services.chaos.live_gate import ChaosLiveGate
+        # Stale evidence blocks entries; never inject failures into a live process.
+        return
 
-        if not ChaosLiveGate.rerun_recommended():
-            return
-        from services.chaos.auto import ensure_fresh_report
-
-        started = await ensure_fresh_report(quick=False)
-        audit("autonomous_chaos_auto_refresh", started=started, context="auto_start")
-
-    async def stop(self) -> dict:
-        from services.autonomous.state import set_autonomous_running
-
-        await set_autonomous_running(False)
-        self._running = False
-        audit("autonomous_engine_stopped")
-        return {"ok": True, "running": False}
+    async def stop(self, *, operator_pause: bool = True) -> dict:
+        from services.autonomous.state import set_autonomous_running, set_operator_paused
+        async with self._start_stop_lock, self.orch.execution.order_lock:
+            if operator_pause:
+                await set_operator_paused(True)
+            await set_autonomous_running(False)
+            self._running = False
+            audit("autonomous_engine_stopped", operator_pause=operator_pause)
+            return {"ok": True, "running": False}
 
     async def status(self) -> dict:
         cached = await get_autonomous_status()
@@ -236,15 +238,6 @@ class AutonomousEngine:
 
             chaos_ok, chaos_blockers = ChaosLiveGate.check_for_live(require_full_suite=True)
             if not chaos_ok:
-                # Stale/missing report → auto-refresh in background and keep running.
-                if ChaosLiveGate.rerun_recommended():
-                    from services.chaos.auto import ensure_fresh_report
-
-                    started = await ensure_fresh_report(quick=False)
-                    audit("autonomous_chaos_auto_refresh", started=started, blockers=chaos_blockers[:2])
-                    status = {"skipped": "chaos_report_refreshing", "running": True}
-                    await set_autonomous_status(status)
-                    return status
                 # Genuine resilience failure → protect capital.
                 reason = chaos_blockers[0] if chaos_blockers else "Chaos gate invalid"
                 await icb.enter_safe_mode(f"Autonomous stopped — {reason}")
@@ -270,6 +263,8 @@ class AutonomousEngine:
         stats = {"scanned": 0, "buy": 0, "rejected": 0, "no_trade": 0, "errors": 0, "cooldown_skipped": 0, "insufficient_skipped": 0}
 
         for symbol in symbols[: cfg.autonomous_max_symbols_per_cycle]:
+            if not await is_autonomous_running():
+                break
             if self.orch.portfolio.is_trading_halted():
                 audit("autonomous_halted_mid_cycle")
                 break

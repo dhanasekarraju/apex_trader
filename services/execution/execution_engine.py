@@ -238,6 +238,10 @@ class ExecutionEngine:
 
     async def _pre_execution_block(self, req: OrderRequest) -> OrderResult | None:
         from services.control.halt import is_emergency_halt
+        from services.autonomous.state import operator_paused
+
+        if await operator_paused():
+            return OrderResult(req.client_order_id, "", OrderStatus.REJECTED, 0, 0, 0, "New entries paused by operator or pause state unavailable")
 
         if await is_reconciliation_degraded():
             return OrderResult(
@@ -488,6 +492,7 @@ class ExecutionEngine:
             take_profit=req.take_profit,
             strategy=req.strategy,
             client_order_id=f"{req.client_order_id}-sl",
+            metadata=dict(req.metadata),
         )
         try:
             sl = await with_timeout(
@@ -505,9 +510,13 @@ class ExecutionEngine:
             entry.raw["stop_order_id"] = sl.broker_order_id
         if cfg.trading_mode == "live" and sl.broker_order_id:
             status = await self._broker.fetch_order_status(sl.broker_order_id)
-            if status.get("status") not in ("OPEN", "TRIGGER PENDING") or float(status.get("filled_quantity") or 0) > 0:
+            from services.execution.protection import stop_problem
+            problem = stop_problem(status, symbol=req.symbol, qty=sl_req.qty,
+                product=req.metadata.get("product", cfg.kite_product),
+                exchange=req.metadata.get("exchange", cfg.kite_exchange))
+            if problem:
                 sl.status = OrderStatus.FAILED
-                sl.message = "Protective stop not confirmed working; review broker immediately"
+                sl.message = "Protective stop not confirmed: " + problem
         if sl.status in (OrderStatus.FAILED, OrderStatus.REJECTED) or not sl.broker_order_id:
             await self._unknown(req, f"Unprotected fill: {sl.message}")
             entry.message = "UNPROTECTED FILL — halted; broker review / emergency exit required"
@@ -592,7 +601,8 @@ class ExecutionEngine:
                 residual = pos.qty - result.filled_qty
                 if residual > 0:
                     protective = OrderRequest(req.symbol, "long", residual, OrderType.MARKET,
-                                              stop_price=pos.stop_loss, client_order_id=req.client_order_id + "-r")
+                                              stop_price=pos.stop_loss, client_order_id=req.client_order_id + "-r",
+                                              metadata=dict(req.metadata))
                     fill = OrderResult(protective.client_order_id, "", OrderStatus.FILLED, residual, pos.entry, 0, "Residual protection")
                     protected = await self._attach_stop_loss(protective, fill, market_price, cfg)
                     pos.stop_order_id = protected.raw.get("stop_order_id", "")

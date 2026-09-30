@@ -7,13 +7,16 @@ permissions:
   contents: read
 jobs:
   tests:
+    strategy:
+      matrix:
+        python: ['3.11', '3.12']
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: '3.12'
+          python-version: ${{ matrix.python }}
           cache: pip
       - run: python -m pip install -r requirements.txt
       - run: python -m pytest tests -q
@@ -23,3 +26,30 @@ jobs:
           API_ACCESS_KEY: test-api-key-for-ci
           KITE_API_KEY: test
           KITE_API_SECRET: test
+
+  postgres-runtime:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: apex_test
+          POSTGRES_PASSWORD: disposable-ci-only
+          POSTGRES_DB: apex_runtime_test
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U apex_test -d apex_runtime_test"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+      - run: python -m pip install -r requirements.txt
+      - run: python -m pytest integration_tests -q
+        env:
+          APEX_TEST_POSTGRES_URL: postgresql+asyncpg://apex_test:disposable-ci-only@127.0.0.1:5432/apex_runtime_test
+          TRADING_MODE: paper
+          API_ACCESS_KEY: ci-only-test-key
