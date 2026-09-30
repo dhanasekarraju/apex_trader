@@ -56,7 +56,10 @@ class ChaosEngine:
         results: list[ScenarioResult] = []
         for scenario in selected:
             audit("chaos_suite_scenario", scenario=scenario.id)
-            result = await self.runner.run(scenario)
+            # Each scenario gets a fresh paper orchestrator so positions, circuit
+            # state and in-memory controls from one fault cannot contaminate the next.
+            runner = ScenarioRunner()
+            result = await runner.run(scenario)
             results.append(result)
 
         self.last_results = results
